@@ -10,6 +10,7 @@ path = "./src/bin/main.rs"
 
 [dependencies]
 embedded-graphics = "0.8.2"
+embedded-layout = "0.4.2"
 heapless = "0.9.3"
 libm = "0.2"
 log = "0.4.27"

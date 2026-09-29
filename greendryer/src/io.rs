@@ -16,9 +16,10 @@ use embedded_graphics::{
     },
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{PrimitiveStyle, Triangle},
+    primitives::{PrimitiveStyle, Rectangle, Triangle},
     text::{Baseline, Text},
 };
+use embedded_layout::align::{Align, horizontal, vertical};
 
 use crate::ProbeMeasure;
 
@@ -32,9 +33,10 @@ const GLYPH_10_HEIGHT: i32 = 20;
 
 const TEXT_X: i32 = 4;
 const TITLE_Y: i32 = (YELLOW_BAND_HEIGHT - GLYPH_6_HEIGHT) / 2;
-const STATUS_Y: i32 = YELLOW_BAND_HEIGHT;
-const READING_Y: i32 = STATUS_Y + GLYPH_6_HEIGHT;
-const VPD_Y: i32 = READING_Y + GLYPH_10_HEIGHT;
+const BLUE_TOP: i32 = YELLOW_BAND_HEIGHT;
+const BLUE_HEIGHT: i32 = PANEL_HEIGHT - YELLOW_BAND_HEIGHT;
+/// Status, temperature, and vapor-pressure deficit stacked with no gap.
+const BLUE_BLOCK_HEIGHT: i32 = GLYPH_6_HEIGHT + GLYPH_10_HEIGHT + GLYPH_6_HEIGHT;
 
 const TRI_W: i32 = 10;
 const TRI_H: i32 = 10;
@@ -47,8 +49,14 @@ const DEHUM_CX: i32 = FRIDGE_CX - TRI_W - TRI_GAP;
 const DEHUM_LEFT: i32 = DEHUM_CX - TRI_W / 2;
 
 const _: () = assert!(TEXT_X + 16 * GLYPH_6_WIDTH == DEHUM_LEFT);
-const _: () = assert!(VPD_Y + GLYPH_6_HEIGHT <= PANEL_HEIGHT);
+const _: () = assert!(BLUE_BLOCK_HEIGHT <= BLUE_HEIGHT);
 const _: () = assert!(TITLE_Y == TRI_TOP);
+
+/// The blue area under the yellow band.
+const BLUE_AREA: Rectangle = Rectangle::new(
+    Point::new(0, BLUE_TOP),
+    Size::new(PANEL_WIDTH as u32, BLUE_HEIGHT as u32),
+);
 
 /// Pin level driven by an active-low relay.
 ///
@@ -268,9 +276,9 @@ where
 /// Paint one 128×64 frame.
 ///
 /// The top 16 rows are the yellow band: the mode title on the left, and the
-/// dehumidifier and fridge triangles on the right. The status line sits
-/// directly under that band. A valid reading then draws temperature and
-/// humidity in the 10×20 font, and vapor-pressure deficit in the 6×10 font.
+/// dehumidifier and fridge triangles on the right. The status line, and a
+/// valid reading's temperature, humidity, and vapor-pressure deficit, are
+/// centered together in the blue area below that band.
 pub(crate) fn draw_frame<D>(target: &mut D, view: &PanelView<'_>) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = BinaryColor>,
@@ -279,17 +287,7 @@ where
     draw_text(target, view.title, Point::new(TEXT_X, TITLE_Y), &FONT_6X10)?;
     draw_triangle(target, DEHUM_CX, true, view.dehumidifier_on)?;
     draw_triangle(target, FRIDGE_CX, false, view.fridge_on)?;
-    draw_text(
-        target,
-        view.status_line,
-        Point::new(TEXT_X, STATUS_Y),
-        &FONT_6X10,
-    )?;
-
-    if let Some(reading) = view.reading {
-        draw_reading(target, reading)?;
-    }
-
+    draw_blue_area(target, view.status_line, view.reading)?;
     Ok(())
 }
 
@@ -304,24 +302,120 @@ where
     Ok(())
 }
 
-/// Separate stack frame for the formatted temperature, humidity, and vapor-pressure deficit.
+/// Center the blue-area lines as one block.
+///
+/// The status line is included when it is not empty. Temperature, humidity,
+/// and vapor-pressure deficit are included when `reading` is present. Each
+/// line is centered horizontally, and the block is centered vertically in
+/// the blue area.
 #[inline(never)]
-fn draw_reading<D>(target: &mut D, reading: ProbeMeasure) -> Result<(), D::Error>
+fn draw_blue_area<D>(
+    target: &mut D,
+    status_line: &str,
+    reading: Option<ProbeMeasure>,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = BinaryColor>,
 {
     let mut temperature: heapless::String<32> = heapless::String::new();
-    write!(temperature, "{:.1}°C {}%", reading.temp, reading.hygr).expect("temperature line fits");
-    draw_text(
-        target,
-        &temperature,
-        Point::new(TEXT_X, READING_Y),
-        &FONT_10X20,
-    )?;
+    let mut deficit: heapless::String<16> = heapless::String::new();
+    if let Some(reading) = reading {
+        format_temperature(reading, &mut temperature);
+        format_deficit(reading, &mut deficit);
+    }
 
-    let mut vpd: heapless::String<16> = heapless::String::new();
-    write!(vpd, "{:.3} kPa", reading.vpd).expect("vapor-pressure deficit line fits");
-    draw_text(target, &vpd, Point::new(TEXT_X, VPD_Y), &FONT_6X10)
+    if reading.is_some() && !status_line.is_empty() {
+        draw_status_and_reading(target, status_line, &temperature, &deficit)
+    } else if reading.is_some() {
+        draw_reading_only(target, &temperature, &deficit)
+    } else if !status_line.is_empty() {
+        draw_status_only(target, status_line)
+    } else {
+        Ok(())
+    }
+}
+
+/// Top of a block of `block_height` centered in the blue area.
+const fn blue_block_top(block_height: i32) -> i32 {
+    BLUE_TOP + (BLUE_HEIGHT - block_height) / 2
+}
+
+/// Separate stack frame for the temperature format.
+#[inline(never)]
+fn format_temperature(reading: ProbeMeasure, out: &mut heapless::String<32>) {
+    write!(out, "{:.1}°C {}%", reading.temp, reading.hygr).expect("temperature line fits");
+}
+
+/// Separate stack frame for the vapor-pressure deficit format.
+#[inline(never)]
+fn format_deficit(reading: ProbeMeasure, out: &mut heapless::String<16>) {
+    write!(out, "{:.3} kPa", reading.vpd).expect("vapor-pressure deficit line fits");
+}
+
+#[inline(never)]
+fn draw_status_and_reading<D>(
+    target: &mut D,
+    status_line: &str,
+    temperature: &str,
+    deficit: &str,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let top = blue_block_top(BLUE_BLOCK_HEIGHT);
+    draw_centered_line(target, status_line, &FONT_6X10, top)?;
+    draw_centered_line(target, temperature, &FONT_10X20, top + GLYPH_6_HEIGHT)?;
+    draw_centered_line(
+        target,
+        deficit,
+        &FONT_6X10,
+        top + GLYPH_6_HEIGHT + GLYPH_10_HEIGHT,
+    )
+}
+
+#[inline(never)]
+fn draw_reading_only<D>(target: &mut D, temperature: &str, deficit: &str) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let top = blue_block_top(GLYPH_10_HEIGHT + GLYPH_6_HEIGHT);
+    draw_centered_line(target, temperature, &FONT_10X20, top)?;
+    draw_centered_line(target, deficit, &FONT_6X10, top + GLYPH_10_HEIGHT)
+}
+
+#[inline(never)]
+fn draw_status_only<D>(target: &mut D, status_line: &str) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    draw_centered_line(
+        target,
+        status_line,
+        &FONT_6X10,
+        blue_block_top(GLYPH_6_HEIGHT),
+    )
+}
+
+/// Center one line horizontally in the blue area, with its top at `top_y`.
+#[inline(never)]
+fn draw_centered_line<D>(
+    target: &mut D,
+    text: &str,
+    font: &MonoFont,
+    top_y: i32,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let style = MonoTextStyle::new(font, BinaryColor::On);
+    let text = Text::with_baseline(text, Point::zero(), style, Baseline::Top).align_to(
+        &BLUE_AREA,
+        horizontal::Center,
+        vertical::Top,
+    );
+    text.translate(Point::new(0, top_y - BLUE_TOP))
+        .draw(target)
+        .map(|_| ())
 }
 
 /// Separate stack frame for one relay triangle.
@@ -382,13 +476,12 @@ mod tests {
     use crate::{AppMode, ProbeMeasure};
 
     const PANEL_WIDTH: i32 = 128;
+    const PANEL_HEIGHT: i32 = 64;
     const WINDOW: i32 = 64;
     const TITLE_X: i32 = 4;
     const TITLE_Y: i32 = 3;
-    const STATUS_Y: i32 = 16;
-    const READING_Y: i32 = 26;
-    const VPD_Y: i32 = 46;
-    const VPD_END: i32 = VPD_Y + 10;
+    const BLUE_TOP: i32 = 16;
+    const BLUE_HEIGHT: i32 = PANEL_HEIGHT - BLUE_TOP;
 
     fn block_on<F: Future>(future: F) -> F::Output {
         fn raw_waker() -> RawWaker {
@@ -531,6 +624,17 @@ mod tests {
         (temperature, vpd)
     }
 
+    /// Horizontal origin that centers `text` in the 128-pixel panel.
+    fn centered_x(text: &str, cell_width: i32) -> i32 {
+        let width = text.chars().count() as i32 * cell_width;
+        (PANEL_WIDTH - width) / 2
+    }
+
+    /// Top of a block of `block_height` centered in the blue area.
+    fn centered_top(block_height: i32) -> i32 {
+        BLUE_TOP + (BLUE_HEIGHT - block_height) / 2
+    }
+
     fn fridge_center_x() -> i32 {
         (PANEL_WIDTH - 4) - 10 / 2
     }
@@ -637,22 +741,35 @@ mod tests {
         };
         let frame = render(&view);
 
+        let status_y = centered_top(10 + 20 + 10);
+        let reading_y = status_y + 10;
+        let vpd_y = reading_y + 20;
+        let vpd_end = vpd_y + 10;
+        assert_eq!(status_y - BLUE_TOP, PANEL_HEIGHT - vpd_end);
+
         assert_text(&frame, view.title, Point::new(TITLE_X, TITLE_Y), &FONT_6X10);
         assert_text(
             &frame,
             view.status_line,
-            Point::new(TITLE_X, STATUS_Y),
+            Point::new(centered_x(view.status_line, 6), status_y),
             &FONT_6X10,
         );
         assert_text(
             &frame,
             &temperature,
-            Point::new(TITLE_X, READING_Y),
+            Point::new(centered_x(&temperature, 10), reading_y),
             &FONT_10X20,
         );
-        assert_text(&frame, &vpd, Point::new(TITLE_X, VPD_Y), &FONT_6X10);
-        assert_blank(&frame.left, VPD_END, WINDOW);
-        assert_blank(&frame.right, VPD_END, WINDOW);
+        assert_text(
+            &frame,
+            &vpd,
+            Point::new(centered_x(&vpd, 6), vpd_y),
+            &FONT_6X10,
+        );
+        assert_blank(&frame.left, BLUE_TOP, status_y);
+        assert_blank(&frame.right, BLUE_TOP, status_y);
+        assert_blank(&frame.left, vpd_end, WINDOW);
+        assert_blank(&frame.right, vpd_end, WINDOW);
 
         assert_triangle(&frame, fridge_center_x(), false, true);
         assert_triangle(&frame, dehumidifier_center_x(), true, false);
@@ -670,11 +787,12 @@ mod tests {
         assert_eq!(view.title.chars().count(), 16);
 
         let frame = render(&view);
+        let status_y = centered_top(10 + 20 + 10);
         assert_text(&frame, view.title, Point::new(TITLE_X, TITLE_Y), &FONT_6X10);
         assert_text(
             &frame,
             view.status_line,
-            Point::new(TITLE_X, STATUS_Y),
+            Point::new(centered_x(view.status_line, 6), status_y),
             &FONT_6X10,
         );
         assert_triangle(&frame, fridge_center_x(), false, false);
@@ -700,6 +818,9 @@ mod tests {
         };
 
         let fresh = render(&failed);
+        let status_y = centered_top(10);
+        let status_end = status_y + 10;
+        assert_eq!(status_y - BLUE_TOP, PANEL_HEIGHT - status_end);
         assert_text(
             &fresh,
             failed.title,
@@ -709,28 +830,33 @@ mod tests {
         assert_text(
             &fresh,
             failed.status_line,
-            Point::new(TITLE_X, STATUS_Y),
+            Point::new(centered_x(failed.status_line, 6), status_y),
             &FONT_6X10,
         );
-        assert_blank(&fresh.left, READING_Y, WINDOW);
-        assert_blank(&fresh.right, READING_Y, WINDOW);
+        assert_blank(&fresh.left, BLUE_TOP, status_y);
+        assert_blank(&fresh.right, BLUE_TOP, status_y);
+        assert_blank(&fresh.left, status_end, WINDOW);
+        assert_blank(&fresh.right, status_end, WINDOW);
         assert_triangle(&fresh, fridge_center_x(), false, false);
         assert_triangle(&fresh, dehumidifier_center_x(), true, false);
 
         let previous = render(&good);
-        assert!(any_on(&previous.left, READING_Y, VPD_END));
+        let reading_y = centered_top(10 + 20 + 10) + 10;
+        assert!(any_on(&previous.left, reading_y, reading_y + 20));
 
         let replaced_left = render_window_twice(&good, &failed, 0);
         let replaced_right = render_window_twice(&good, &failed, WINDOW);
-        assert_blank(&replaced_left, READING_Y, WINDOW);
-        assert_blank(&replaced_right, READING_Y, WINDOW);
+        assert_blank(&replaced_left, BLUE_TOP, status_y);
+        assert_blank(&replaced_right, BLUE_TOP, status_y);
+        assert_blank(&replaced_left, status_end, WINDOW);
+        assert_blank(&replaced_right, status_end, WINDOW);
         assert_text(
             &FrameWindows {
                 left: replaced_left,
                 right: replaced_right,
             },
             failed.status_line,
-            Point::new(TITLE_X, STATUS_Y),
+            Point::new(centered_x(failed.status_line, 6), status_y),
             &FONT_6X10,
         );
     }

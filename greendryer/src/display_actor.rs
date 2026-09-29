@@ -141,7 +141,7 @@ mod tests {
             "the first frame should paint the yellow-band title"
         );
         assert!(
-            !any_on(&actor, 26, 46),
+            !any_on(&actor, 16, 64),
             "an empty rack must not invent a temperature"
         );
 
@@ -168,7 +168,7 @@ mod tests {
         state.sample_rack_mut().push(Ok(sample));
         ready(actor.refresh(&state));
         assert!(
-            !any_on(&actor, 26, 46),
+            !any_on(&actor, 16, 64),
             "an incomplete rack must not invent a temperature"
         );
 
@@ -176,7 +176,7 @@ mod tests {
         ready(actor.refresh(&state));
         assert_eq!(actor.frames(), 2);
         assert!(
-            any_on(&actor, 26, 46),
+            any_on(&actor, 16, 64),
             "a healthy rack should paint the latest sample"
         );
 
@@ -184,7 +184,7 @@ mod tests {
         ready(actor.refresh(&state));
         assert_eq!(actor.frames(), 3);
         assert!(
-            !any_on(&actor, 26, 46),
+            !any_on(&actor, 16, 64),
             "a sick rack must not keep showing a temperature"
         );
     }
