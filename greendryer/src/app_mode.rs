@@ -55,7 +55,7 @@ impl AppMode {
     /// Yellow-band title. The longest title is 16 characters.
     pub const fn title(self) -> &'static str {
         match self {
-            Self::WaitProbe => "ÉCHEC SONDE",
+            Self::WaitProbe => "ATTENTE SONDE",
             Self::Nominal => "NOMINAL",
             Self::VpdRegulation => "RÉGULATION HYGR.",
             Self::TempEnforcing => "FORÇAGE TEMP.",

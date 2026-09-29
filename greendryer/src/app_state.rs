@@ -8,6 +8,14 @@ use heapless::String;
 
 use crate::{AppMode, RelayBank, SampleRack};
 
+/// Sample-rack capacity of the cabinet firmware.
+pub const SAMPLE_SLOTS: usize = 5;
+
+/// Status-line capacity, in bytes, of the cabinet firmware.
+///
+/// This holds [`COMPRESSOR_READY`] and a glyph line of length `2 * SAMPLE_SLOTS - 1`.
+pub const STATUS_BYTES: usize = 17;
+
 /// Whole seconds of compressor rest after each fridge on-to-off edge.
 pub const COMPRESSOR_REST_S: u32 = 600;
 
@@ -15,6 +23,9 @@ pub const COMPRESSOR_REST_S: u32 = 600;
 ///
 /// The phrase is 16 characters and 17 bytes long.
 pub const COMPRESSOR_READY: &str = "compresseur prêt";
+
+const _: () = assert!(STATUS_BYTES >= COMPRESSOR_READY.len());
+const _: () = assert!(STATUS_BYTES >= 2 * SAMPLE_SLOTS - 1);
 
 /// The fridge was commanded on while compressor rest was still active.
 ///
@@ -26,6 +37,7 @@ pub struct CompressorRestError;
 ///
 /// `N` is the sample-rack capacity. `L` is the status-line capacity in bytes.
 /// `L` has to hold [`COMPRESSOR_READY`] and a glyph line of length `2N - 1`.
+#[derive(Clone, PartialEq)]
 pub struct AppState<const N: usize, const L: usize> {
     app_mode: AppMode,
     /// Seconds of the last mode switch. Boot leaves this at 0.

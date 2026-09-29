@@ -249,6 +249,11 @@ impl<D> MemoryPanel<D> {
     pub const fn new(target: D) -> Self {
         Self { target }
     }
+
+    /// The target later frames are drawn into.
+    pub const fn target(&self) -> &D {
+        &self.target
+    }
 }
 
 impl<D> Panel for MemoryPanel<D>

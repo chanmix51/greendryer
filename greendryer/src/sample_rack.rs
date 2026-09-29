@@ -52,6 +52,7 @@ pub type SampleSlot = Option<Result<ProbeMeasure, ProbeError>>;
 /// Backed by a [`HistoryBuf`] (the heapless hist buffer). Every slot starts
 /// as `None`. A push fills the next slot and leaves the others in place.
 /// Once the rack is full, the next push overwrites the oldest slot.
+#[derive(Clone, PartialEq)]
 pub struct SampleRack<const N: usize> {
     slots: HistoryBuf<SampleSlot, N>,
 }
@@ -73,6 +74,14 @@ impl<const N: usize> SampleRack<N> {
     /// the next push overwrites the oldest slot.
     pub fn push(&mut self, sample: Result<ProbeMeasure, ProbeError>) {
         self.slots.write(Some(sample));
+    }
+
+    /// The most recently stored slot.
+    ///
+    /// `None` when that slot is still empty. A fresh rack has not stored a
+    /// sample, so this is `None` until the first push.
+    pub fn latest(&self) -> SampleSlot {
+        self.slots.recent().copied().flatten()
     }
 
     /// Slots in write order. Index 0 is the first slot filled.
@@ -211,6 +220,7 @@ mod tests {
         assert!(!rack.is_dead());
         assert_eq!(rack.slots().len(), N);
         assert!(rack.slots().iter().all(Option::is_none));
+        assert_eq!(rack.latest(), None);
         assert_eq!(rack.glyph_line::<{ 2 * N - 1 }>().as_str(), "? ? ?");
     }
 
@@ -253,6 +263,7 @@ mod tests {
 
         rack.push(newest);
         assert_eq!(rack.slots(), &[Some(newest), Some(failed), Some(third)]);
+        assert_eq!(rack.latest(), Some(newest));
     }
 
     #[test]
@@ -367,6 +378,7 @@ mod tests {
         assert_eq!(rack.glyph_line::<{ 2 * N - 1 }>().len(), 2 * N - 1);
 
         rack.push(ok(18.0, 60));
+        assert_eq!(rack.latest(), Some(ok(18.0, 60)));
         assert_eq!(rack.glyph_line::<{ 2 * N - 1 }>().as_str(), "* ? ?");
 
         rack.push(Err(ProbeError));
