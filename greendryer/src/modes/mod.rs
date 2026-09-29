@@ -69,6 +69,8 @@ pub enum AppModError {
     CompressorRest,
     /// The status line did not fit in the published buffer.
     StatusLine,
+    /// One sample switched policies more times than the actor follows.
+    Cascade,
 }
 
 impl From<CompressorRestError> for AppModError {
@@ -186,7 +188,7 @@ pub(crate) fn settle_nominal<const N: usize, const L: usize>(
 }
 
 #[cfg(test)]
-mod test_support {
+pub(crate) mod test_support {
     use crate::{AppMode, AppState, ProbeError, ProbeMeasure};
 
     use super::{

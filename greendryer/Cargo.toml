@@ -12,6 +12,7 @@ path = "./src/bin/main.rs"
 embedded-graphics = "0.8.2"
 heapless = "0.9.3"
 libm = "0.2"
+log = "0.4.27"
 
 # Chip crates are not built for host tests (`cargo test --lib --target <host>`).
 [target.'cfg(target_arch = "xtensa")'.dependencies]
@@ -20,7 +21,6 @@ esp-hal = { version = "~1.1.0", features = ["esp32", "log-04", "unstable"] }
 esp-rtos = { version = "0.3.0", features = ["embassy", "esp32", "log-04"] }
 
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32", "log-04"] }
-log                    = "0.4.27"
 
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = { version = "0.5.0", features = ["log"] }
