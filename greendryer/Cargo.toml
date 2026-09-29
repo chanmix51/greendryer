@@ -9,6 +9,7 @@ name = "greendryer"
 path = "./src/bin/main.rs"
 
 [dependencies]
+embedded-graphics = "0.8.2"
 heapless = "0.9.3"
 libm = "0.2"
 

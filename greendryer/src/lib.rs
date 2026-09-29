@@ -10,7 +10,9 @@
 extern crate std;
 
 mod app_mode;
+mod io;
 mod sample_rack;
 
 pub use app_mode::AppMode;
+pub use io::{MemoryPanel, Panel, PanelView, PinLevel, RecordingRelay, RelayBank, RelayOutput};
 pub use sample_rack::{ProbeError, ProbeMeasure, SampleRack, SampleSlot};
