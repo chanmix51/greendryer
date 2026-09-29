@@ -9,6 +9,8 @@
 #[cfg(test)]
 extern crate std;
 
+mod app_mode;
 mod sample_rack;
 
+pub use app_mode::AppMode;
 pub use sample_rack::{ProbeError, ProbeMeasure, SampleRack, SampleSlot};
