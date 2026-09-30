@@ -216,6 +216,19 @@ impl RelayOutput for RecordingRelay {
     }
 }
 
+/// Downward fridge triangle on the yellow band.
+///
+/// The frame is cleared first, so [`Hidden`](Self::Hidden) leaves those pixels off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FridgeTriangle {
+    /// No pixels.
+    Hidden,
+    /// 1-pixel outline.
+    Outline,
+    /// Filled.
+    Filled,
+}
+
 /// What one panel frame shows.
 ///
 /// `reading` is the climate sample to paint. It is `None` when the probe has
@@ -225,8 +238,8 @@ impl RelayOutput for RecordingRelay {
 pub struct PanelView<'a> {
     /// Yellow-band title.
     pub title: &'a str,
-    /// Logical fridge command. `true` fills the downward triangle.
-    pub fridge_on: bool,
+    /// Downward fridge triangle.
+    pub fridge: FridgeTriangle,
     /// Logical dehumidifier command. `true` fills the upward triangle.
     pub dehumidifier_on: bool,
     /// Status line drawn directly under the yellow band.
@@ -285,8 +298,17 @@ where
 {
     target.clear(BinaryColor::Off)?;
     draw_text(target, view.title, Point::new(TEXT_X, TITLE_Y), &FONT_6X10)?;
-    draw_triangle(target, DEHUM_CX, true, view.dehumidifier_on)?;
-    draw_triangle(target, FRIDGE_CX, false, view.fridge_on)?;
+    draw_triangle(
+        target,
+        DEHUM_CX,
+        true,
+        if view.dehumidifier_on {
+            FridgeTriangle::Filled
+        } else {
+            FridgeTriangle::Outline
+        },
+    )?;
+    draw_triangle(target, FRIDGE_CX, false, view.fridge)?;
     draw_blue_area(target, view.status_line, view.reading)?;
     Ok(())
 }
@@ -424,11 +446,16 @@ fn draw_triangle<D>(
     target: &mut D,
     center_x: i32,
     points_up: bool,
-    on: bool,
+    mark: FridgeTriangle,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = BinaryColor>,
 {
+    let on = match mark {
+        FridgeTriangle::Hidden => return Ok(()),
+        FridgeTriangle::Filled => true,
+        FridgeTriangle::Outline => false,
+    };
     let bottom = TRI_TOP + TRI_H;
     let half = TRI_W / 2;
     let (apex_y, base_y) = if points_up {
@@ -472,7 +499,10 @@ mod tests {
         text::{Baseline, Text},
     };
 
-    use super::{MemoryPanel, Panel, PanelView, PinLevel, RecordingRelay, RelayBank, RelayOutput};
+    use super::{
+        FridgeTriangle, MemoryPanel, Panel, PanelView, PinLevel, RecordingRelay, RelayBank,
+        RelayOutput,
+    };
     use crate::{AppMode, ProbeMeasure};
 
     const PANEL_WIDTH: i32 = 128;
@@ -734,7 +764,7 @@ mod tests {
         let (temperature, vpd) = reading_lines(reading);
         let view = PanelView {
             title: AppMode::Nominal.title(),
-            fridge_on: true,
+            fridge: FridgeTriangle::Filled,
             dehumidifier_on: false,
             status_line: "reste 600s",
             reading: Some(reading),
@@ -779,7 +809,7 @@ mod tests {
     fn filled_triangle_follows_the_relay_that_is_on() {
         let view = PanelView {
             title: AppMode::VpdRegulation.title(),
-            fridge_on: false,
+            fridge: FridgeTriangle::Outline,
             dehumidifier_on: true,
             status_line: "12s",
             reading: Some(ProbeMeasure::new(2, 19.0, 64)),
@@ -805,14 +835,14 @@ mod tests {
         let reading = ProbeMeasure::new(3, 21.0, 55);
         let good = PanelView {
             title: AppMode::Nominal.title(),
-            fridge_on: true,
+            fridge: FridgeTriangle::Filled,
             dehumidifier_on: true,
             status_line: "reste 600s",
             reading: Some(reading),
         };
         let failed = PanelView {
             title: AppMode::WaitProbe.title(),
-            fridge_on: false,
+            fridge: FridgeTriangle::Outline,
             dehumidifier_on: false,
             status_line: "! ! !",
             reading: None,

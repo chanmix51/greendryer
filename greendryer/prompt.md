@@ -28,7 +28,7 @@ Write the tests before those implementations:
 
 - `RelayBank` uses `false` for off and `true` for on. `sw3` and `sw4` stay off.
 - A recording `RelayOutput` stores the fridge and dehumidifier commands from `apply`. Mapping a logical on to a pin low, and a logical off to a pin high, is checked on that fake. No GPIO register is touched.
-- A `Panel` draw into `embedded-graphics`' `MockDisplay` shows the yellow-band title, a filled triangle for a relay that is on, a 1-pixel outline for a relay that is off, and the status line. A failed probe does not invent a temperature.
+- A `Panel` draw into `embedded-graphics`' `MockDisplay` shows the yellow-band title, a filled triangle for a relay that is on, a 1-pixel outline for a relay that is off, and the status line. The downward triangle may instead be left undrawn. A failed probe does not invent a temperature.
 
 Then implement `RelayBank`, `RelayOutput`, `Panel`, the recording relay, and the `MockDisplay` draw path.
 
@@ -50,7 +50,7 @@ Then implement `ApplicationMode`, `WaitProbeMode`, `NominalMode`, `CompressorWai
 
 ### 5. The real display
 
-The frame tests from step 2 already cover drawing. Add an integration test that `DisplayActor` redraws only when the published `AppState` changes, using `MockDisplay` as the `Panel`.
+The frame tests from step 2 already cover a filled triangle and a 1-pixel outline. Add a host test, on `MockDisplay`, that `DisplayActor` paints when the published `AppState` changes, and when the fridge triangle for `now_s` differs from the triangle in the last frame. While rest is active, an even second leaves the downward triangle undrawn and the next odd second draws its outline, including on a dead rack whose state compares equal. When that rest clears, the outline comes back on the same state. Two wakes in the same second, with the same state and the same triangle, paint once. `NOMINAL` and `WAIT_PROBE` still do not write compressor rest on the status line.
 
 Then implement the SSD1306 `Panel` and the Embassy display task on the shared I2C bus. This is the only step that constructs the panel. The firmware build for this crate's ESP32 target is the check that the real panel and the pin adapter compile into the binary.
 
@@ -199,9 +199,13 @@ Run Embassy from timer group 0, as the crate already does.
 
 ## Display
 
-SSD1306, 128×64, I2C address `0x3C`, on the same master as the probe. Give the display and the probe each their own handle to one shared bus. Use buffered graphics, rotation 0. Initialize the panel before the first frame. A display task redraws only when the published state changes, and it wakes about every 100 ms to check.
+SSD1306, 128×64, I2C address `0x3C`, on the same master as the probe. Give the display and the probe each their own handle to one shared bus. Use buffered graphics, rotation 0. Initialize the panel before the first frame. A display task wakes about every 100 ms to check. It paints when the published `AppState` differs from the last frame, and when the fridge triangle for this second differs from the triangle in the last frame. It does not flush the SSD1306 on a wake that does not paint. Two wakes in the same second, with the same state and the same fridge triangle, paint once.
 
-The panel's top 16 rows are the yellow band. Draw the mode title there in the 6×10 Latin-1 font, a few pixels from the left and vertically centered in the band. On the right of the same band, draw two triangles, each 10 pixels wide and 10 pixels tall, 4 pixels apart, 4 pixels in from the right edge. The right-hand triangle points down and means the fridge. The left-hand one points up and means the dehumidifier. Fill the triangle when that relay is on. Draw only a 1-pixel outline when it is off. Center both triangles vertically in the yellow band.
+`now_s` is the whole seconds since the same boot `Instant` the control loop uses. It is not a field of `AppState`. Do not read `ProbeMeasure.time`. Do not store a blink phase on `AppState`. Rest is `AppState::rest_active(now_s)`.
+
+The panel's top 16 rows are the yellow band. Draw the mode title there in the 6×10 Latin-1 font, a few pixels from the left and vertically centered in the band. On the right of the same band, draw two triangles, each 10 pixels wide and 10 pixels tall, 4 pixels apart, 4 pixels in from the right edge. The right-hand triangle points down and means the fridge. The left-hand one points up and means the dehumidifier. Center both triangles vertically in the yellow band.
+
+While rest is clear, fill a triangle when that relay is on and draw a 1-pixel outline when it is off. Odd and even seconds paint the same triangles. While rest is active, blink the downward triangle in every mode. The fridge relay is off for that rest. Blink the outline, not a filled triangle: an odd `now_s` draws the 1-pixel outline, and an even `now_s` draws no downward triangle. The frame is cleared first, so those pixels stay off. The upward dehumidifier triangle does not blink. The blink does not change the status line. `NOMINAL` and `WAIT_PROBE` still do not write compressor rest there.
 
 `ATT. COMPRESS.` and `FORÇAGE HYGRO.` are the longest titles. Each is 14 characters. At 6 pixels per character, starting at x = 4, the 16th character of a title ends as it meets the left triangle. Do not lengthen a title that far. The other titles are `NOMINAL`, `FORÇAGE TEMP.`, `ATT. SONDE`, `RÉGUL. HYGRO.`, and `ÉCHEC / ARRÊT`.
 
@@ -302,7 +306,7 @@ The `AppState` owns the general state of the Application.
 
 ## Testability
 
-Two actors own the devices and share one published `AppState`. `MainActor` is the only writer. `DisplayActor` reads a copy and redraws. The mode decision stays a pure function. Host tests call that function with samples, the current mode, the dehumidifier latch, the rest flag, and the elapsed deadlines. They do not construct a probe, a relay, or a panel. Build them in the order in "Build order": tests for a step come before that step's production code.
+Two actors own the devices and share one published `AppState`. `MainActor` is the only writer. `DisplayActor` reads a copy and the current second, and redraws when the state or the fridge triangle changes. The mode decision stays a pure function. Host tests call that function with samples, the current mode, the dehumidifier latch, the rest flag, and the elapsed deadlines. They do not construct a probe, a relay, or a panel. Build them in the order in "Build order": tests for a step come before that step's production code.
 
 Each actor takes its devices as generic adapter parameters. Static dispatch monomorphizes to the same I2C and GPIO calls as a direct loop, and the crate's release profile inlines them. The actor is an ordinary generic async function. Embassy tasks are monomorphic, so the binary task builds the real adapters and calls that function. `MainActor` is the body of `main`. `DisplayActor` is the display task that already shares the bus. Peripheral construction stays in the binary: pins, the I2C master, and the shared-bus mutex. The library holds the decision, the actors, and the adapter traits, so `cargo test` runs on the host.
 
@@ -335,7 +339,7 @@ struct DisplayActor<D> {
 }
 ```
 
-`RelayOutput` is the pin adapter. `RelayBank` is the logical state in `AppState`: `true` is on and `false` is off. `apply` turns those bools into the active-low pin levels. `step` pushes one probe result into the rack, calls the pure decision, applies SW1 and SW2, and keeps SW3 and SW4 off. A host test of the shell uses a fake probe and a recording relay bank and passes its own `AppState`. The transition table in "Done when" is covered by the pure function alone. Triangle drawing takes `impl DrawTarget<Color = BinaryColor>`, so a `MockDisplay` can check the frame without the SSD1306. The 1024-byte framebuffer stays inside `DisplayActor`.
+`RelayOutput` is the pin adapter. `RelayBank` is the logical state in `AppState`: `true` is on and `false` is off. `apply` turns those bools into the active-low pin levels. `step` pushes one probe result into the rack, calls the pure decision, applies SW1 and SW2, and keeps SW3 and SW4 off. A host test of the shell uses a fake probe and a recording relay bank and passes its own `AppState`. The transition table in "Done when" is covered by the pure function alone. Triangle drawing takes `impl DrawTarget<Color = BinaryColor>`, so a `MockDisplay` can check the frame without the SSD1306. `DisplayActor::refresh` takes the published state and `now_s`. It paints when that state differs from the last frame, or when the fridge triangle for that second differs from the triangle in the last frame. The 1024-byte framebuffer stays inside `DisplayActor`.
 
 ## state machine management
 

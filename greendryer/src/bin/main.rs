@@ -42,18 +42,24 @@ mod display_task {
         reason = "the SSD1306 framebuffer is 1024 bytes, and this task awaits async I2C futures with large esp-hal error types"
     )]
 
-    use super::{Duration, Published, SAMPLE_SLOTS, STATUS_BYTES, SharedI2c, Timer};
+    use super::{Duration, Instant, Published, SAMPLE_SLOTS, STATUS_BYTES, SharedI2c, Timer};
     use greendryer::{DisplayActor, Ssd1306Panel};
 
-    /// Wake about every 100 ms and paint when the published state changes.
+    /// Wake about every 100 ms. Paint when the published state changes, or
+    /// when the fridge triangle for this second differs from the last frame.
+    ///
+    /// `boot` is the same instant the control loop uses for its seconds. A
+    /// wake that finds the same state and the same triangle does not flush
+    /// the SSD1306.
     #[embassy_executor::task]
-    pub async fn run(i2c: SharedI2c, published: &'static Published) {
+    pub async fn run(i2c: SharedI2c, published: &'static Published, boot: Instant) {
         let panel = Ssd1306Panel::init(i2c).await;
         let mut actor = DisplayActor::<_, SAMPLE_SLOTS, STATUS_BYTES>::new(panel);
         log::info!("display worker started");
         loop {
             let state = published.lock().await.clone();
-            actor.refresh(&state).await;
+            let now_s = u32::try_from(boot.elapsed().as_secs()).unwrap_or(u32::MAX);
+            actor.refresh(&state, now_s).await;
             Timer::after(Duration::from_millis(100)).await;
         }
     }
@@ -101,7 +107,9 @@ async fn main(spawner: Spawner) -> ! {
     WaitProbeMode::init(&mut state, 0).expect("wait-probe boot");
     let published = PUBLISHED.init(Mutex::new(state.clone()));
 
-    spawner.spawn(display_task::run(oled_i2c, published).expect("failed to spawn display worker"));
+    spawner.spawn(
+        display_task::run(oled_i2c, published, boot).expect("failed to spawn display worker"),
+    );
     let mut control = MainActor::new(Sht31Probe::new(sht_i2c, boot), relays);
     loop {
         let now_s = u32::try_from(boot.elapsed().as_secs()).unwrap_or(u32::MAX);
