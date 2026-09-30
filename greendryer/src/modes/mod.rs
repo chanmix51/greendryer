@@ -7,16 +7,18 @@
 //!
 //! `exec` may switch [`AppMode`](crate::AppMode). It does not call the next
 //! policy. The actor sees the new mode, calls that policy's `init`, then
-//! `exec`, and repeats while the mode keeps changing. A rack that has just
-//! filled can therefore move from `WAIT_PROBE` through `NOMINAL` into
-//! `TEMP_ENFORCING` on the same sample. A dead rack is switched to
-//! [`WaitProbeMode`] by the actor before `exec`, so the fridge-off edge and
-//! the outage clock happen on that sample.
+//! `exec`, and repeats while the mode keeps changing. One sample may cross
+//! several modes. The longest chains are three modes, such as `WAIT_PROBE`
+//! → `NOMINAL` → `COMPRESSOR_WAIT` and `COMPRESSOR_WAIT` → `NOMINAL` →
+//! `VPD_REGULATION`. A dead rack is switched to [`WaitProbeMode`] by the
+//! actor before `exec`, so a fridge that was on starts compressor rest on
+//! that sample. `WAIT_PROBE` shows the glyph line, not that rest.
 //!
 //! `now_s` is the current whole second. [`AppState`](crate::AppState) stores
 //! the mode-entry timestamp and the last fridge on-to-off edge. It does not
 //! store a clock, so each call receives the time.
 
+mod compressor_wait;
 mod failure_stop;
 mod hr_enforcing;
 mod nominal;
@@ -24,6 +26,7 @@ mod temp_enforcing;
 mod vpd_regulation;
 mod wait_probe;
 
+pub use compressor_wait::CompressorWaitMode;
 pub use failure_stop::FailureStopMode;
 pub use hr_enforcing::HrEnforcingMode;
 pub use nominal::NominalMode;
@@ -33,7 +36,7 @@ pub use wait_probe::WaitProbeMode;
 
 use core::fmt::Write;
 
-use crate::{AppState, COMPRESSOR_READY, CompressorRestError};
+use crate::{AppState, CompressorRestError};
 
 /// Relative humidity, in percent, at or above which `HR_ENFORCING` starts.
 pub const HR_EMERGENCY_PERCENT: u8 = 70;
@@ -104,6 +107,15 @@ pub trait ApplicationMode<const N: usize, const L: usize> {
     fn exec(&self, state: &mut AppState<N, L>, now_s: u32) -> Result<(), AppModError>;
 }
 
+/// Publish one mark per rack slot.
+pub(crate) fn publish_glyphs<const N: usize, const L: usize>(
+    state: &mut AppState<N, L>,
+) -> Result<(), AppModError> {
+    let glyphs = state.sample_rack().glyph_line::<L>();
+    state.set_status_line(glyphs.as_str())?;
+    Ok(())
+}
+
 /// Sick or incomplete racks freeze the caller.
 ///
 /// Publishes the glyph line and reports that `exec` must return without
@@ -114,8 +126,7 @@ pub(crate) fn held_for_probe_gaps<const N: usize, const L: usize>(
     if !(state.sample_rack().is_sick() || state.sample_rack().is_incomplete()) {
         return Ok(false);
     }
-    let glyphs = state.sample_rack().glyph_line::<L>();
-    state.set_status_line(glyphs.as_str())?;
+    publish_glyphs(state)?;
     Ok(true)
 }
 
@@ -162,29 +173,33 @@ pub(crate) fn publish_elapsed<const N: usize, const L: usize>(
     Ok(())
 }
 
-/// Status for a healthy `NOMINAL` rack: rest remaining, or the compressor ready.
-pub(crate) fn publish_nominal_status<const N: usize, const L: usize>(
+/// Clear the status line.
+pub(crate) fn clear_status<const N: usize, const L: usize>(
     state: &mut AppState<N, L>,
-    now_s: u32,
 ) -> Result<(), AppModError> {
-    if state.rest_active(now_s) {
-        let remaining = state.rest_remaining_s(now_s);
-        let mut line = heapless::String::<L>::new();
-        write!(line, "repos {remaining}s")?;
-        state.set_status_line(line.as_str())?;
-    } else {
-        state.set_status_line(COMPRESSOR_READY)?;
-    }
+    state.set_status_line("")?;
     Ok(())
 }
 
-/// Both actuators off, then the `NOMINAL` status line.
+/// `reste {S}s`, with S the whole seconds of compressor rest still remaining.
+pub(crate) fn publish_rest<const N: usize, const L: usize>(
+    state: &mut AppState<N, L>,
+    now_s: u32,
+) -> Result<(), AppModError> {
+    let remaining = state.rest_remaining_s(now_s);
+    let mut line = heapless::String::<L>::new();
+    write!(line, "reste {remaining}s")?;
+    state.set_status_line(line.as_str())?;
+    Ok(())
+}
+
+/// Both actuators off, then an empty status line.
 pub(crate) fn settle_nominal<const N: usize, const L: usize>(
     state: &mut AppState<N, L>,
     now_s: u32,
 ) -> Result<(), AppModError> {
     command_relays(state, false, false, now_s)?;
-    publish_nominal_status(state, now_s)
+    clear_status(state)
 }
 
 #[cfg(test)]
@@ -391,7 +406,7 @@ mod tests {
         assert_eq!(state.compressor_last_stop_s(), Some(now));
         waiting.exec(&mut state, now).unwrap();
         assert_eq!(state.app_mode(), AppMode::WaitProbe);
-        assert_eq!(state.status_line(), "0s");
+        assert_eq!(state.status_line(), "! ! !");
 
         test_support::fill(&mut state, test_support::in_band());
         waiting.exec(&mut state, now + 3).unwrap();
@@ -403,6 +418,8 @@ mod tests {
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
+        assert_eq!(state.status_line(), "");
+        assert!(state.rest_active(now + 3));
     }
 
     #[test]
@@ -459,6 +476,6 @@ mod tests {
         nominal.exec(&mut state, 0).unwrap();
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert!(!state.relay_bank().sw1());
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
     }
 }

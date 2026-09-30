@@ -13,18 +13,16 @@ pub const SAMPLE_SLOTS: usize = 5;
 
 /// Status-line capacity, in bytes, of the cabinet firmware.
 ///
-/// This holds [`COMPRESSOR_READY`] and a glyph line of length `2 * SAMPLE_SLOTS - 1`.
-pub const STATUS_BYTES: usize = 17;
+/// This holds `reste 600s` (10 bytes) and a glyph line of length `2 * SAMPLE_SLOTS - 1`.
+pub const STATUS_BYTES: usize = 10;
 
 /// Whole seconds of compressor rest after each fridge on-to-off edge.
 pub const COMPRESSOR_REST_S: u32 = 600;
 
-/// Status text when compressor rest is clear.
-///
-/// The phrase is 16 characters and 17 bytes long.
-pub const COMPRESSOR_READY: &str = "compresseur prêt";
+/// Byte length of `reste 600s`, the longest compressor-rest countdown.
+const REST_STATUS_BYTES: usize = 10;
 
-const _: () = assert!(STATUS_BYTES >= COMPRESSOR_READY.len());
+const _: () = assert!(STATUS_BYTES >= REST_STATUS_BYTES);
 const _: () = assert!(STATUS_BYTES >= 2 * SAMPLE_SLOTS - 1);
 
 /// The fridge was commanded on while compressor rest was still active.
@@ -36,7 +34,7 @@ pub struct CompressorRestError;
 /// General state of the cabinet controller.
 ///
 /// `N` is the sample-rack capacity. `L` is the status-line capacity in bytes.
-/// `L` has to hold [`COMPRESSOR_READY`] and a glyph line of length `2N - 1`.
+/// `L` has to hold `reste 600s` and a glyph line of length `2N - 1`.
 #[derive(Clone, PartialEq)]
 pub struct AppState<const N: usize, const L: usize> {
     app_mode: AppMode,
@@ -59,10 +57,7 @@ impl<const N: usize, const L: usize> AppState<N, L> {
     pub fn new() -> Self {
         const {
             assert!(N > 0, "a sample rack needs at least one slot");
-            assert!(
-                L >= COMPRESSOR_READY.len(),
-                "status line must hold 'compresseur prêt'"
-            );
+            assert!(L >= REST_STATUS_BYTES, "status line must hold 'reste 600s'");
             assert!(
                 L >= 2 * N - 1,
                 "status line must hold a glyph line of length 2N - 1"
@@ -191,11 +186,11 @@ impl<const N: usize, const L: usize> Default for AppState<N, L> {
 mod tests {
     use crate::{AppMode, ProbeError};
 
-    use super::{AppState, COMPRESSOR_READY, COMPRESSOR_REST_S, CompressorRestError};
+    use super::{AppState, COMPRESSOR_REST_S, CompressorRestError, REST_STATUS_BYTES};
 
     const N: usize = 3;
-    /// Byte capacity for `compresseur prêt`. The phrase is 16 characters; `ê` is two bytes.
-    const L: usize = 17;
+    /// Byte capacity for `reste 600s`.
+    const L: usize = REST_STATUS_BYTES;
 
     #[test]
     fn boot_state_is_wait_probe_relays_off_rest_clear_and_an_empty_rack() {
@@ -304,12 +299,12 @@ mod tests {
     }
 
     #[test]
-    fn status_line_holds_compressor_ready_and_a_glyph_line() {
+    fn status_line_holds_reste_600s_and_a_glyph_line() {
         let mut state = AppState::<N, L>::new();
-        state.set_status_line(COMPRESSOR_READY).unwrap();
-        assert_eq!(state.status_line(), "compresseur prêt");
-        assert_eq!(state.status_line().chars().count(), 16);
-        assert_eq!(COMPRESSOR_READY.len(), L);
+        state.set_status_line("reste 600s").unwrap();
+        assert_eq!(state.status_line(), "reste 600s");
+        assert_eq!(state.status_line().len(), 10);
+        assert_eq!(REST_STATUS_BYTES, L);
 
         const WIDE: usize = 10;
         const WIDE_L: usize = 2 * WIDE - 1;
@@ -321,8 +316,8 @@ mod tests {
         assert_eq!(wide.status_line(), "! ? ? ? ? ? ? ? ? ?");
         assert_eq!(wide.status_line().len(), 2 * WIDE - 1);
 
-        wide.set_status_line(COMPRESSOR_READY).unwrap();
-        assert_eq!(wide.status_line(), "compresseur prêt");
+        wide.set_status_line("reste 600s").unwrap();
+        assert_eq!(wide.status_line(), "reste 600s");
     }
 
     #[test]

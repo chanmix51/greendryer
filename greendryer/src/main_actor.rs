@@ -10,15 +10,15 @@ use core::fmt::Write;
 use core::future::Future;
 
 use crate::modes::{
-    AppModError, ApplicationMode, FailureStopMode, HrEnforcingMode, NominalMode, TempEnforcingMode,
-    VpdRegulationMode, WaitProbeMode,
+    AppModError, ApplicationMode, CompressorWaitMode, FailureStopMode, HrEnforcingMode,
+    NominalMode, TempEnforcingMode, VpdRegulationMode, WaitProbeMode,
 };
 use crate::{AppMode, AppState, ProbeError, ProbeMeasure, RelayBank, RelayOutput};
 
 /// How many policies one sample may enter, including the policy already active.
 ///
-/// The longest honest chain is `WAIT_PROBE` → `NOMINAL` → `TEMP_ENFORCING`
-/// (or `HR_ENFORCING` → `NOMINAL` → `TEMP_ENFORCING`).
+/// The longest chains are three modes, such as `WAIT_PROBE` → `NOMINAL` →
+/// `COMPRESSOR_WAIT` and `COMPRESSOR_WAIT` → `NOMINAL` → `VPD_REGULATION`.
 const MAX_POLICY_PASSES: usize = 4;
 
 /// One climate sample from the probe.
@@ -116,6 +116,9 @@ fn init_mode<const N: usize, const L: usize>(
         AppMode::Nominal => {
             NominalMode::init(state, now_s)?;
         }
+        AppMode::CompressorWait => {
+            CompressorWaitMode::init(state, now_s)?;
+        }
         AppMode::VpdRegulation => {
             VpdRegulationMode::init(state, now_s)?;
         }
@@ -140,6 +143,7 @@ fn exec_mode<const N: usize, const L: usize>(
     match mode {
         AppMode::WaitProbe => WaitProbeMode.exec(state, now_s),
         AppMode::Nominal => NominalMode.exec(state, now_s),
+        AppMode::CompressorWait => CompressorWaitMode.exec(state, now_s),
         AppMode::VpdRegulation => VpdRegulationMode.exec(state, now_s),
         AppMode::TempEnforcing => TempEnforcingMode.exec(state, now_s),
         AppMode::HrEnforcing => HrEnforcingMode.exec(state, now_s),
@@ -345,7 +349,7 @@ mod tests {
         drive_ok(&mut actor, &mut state, cool, 0);
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_outputs(&actor, false, false);
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
     }
 
     #[test]
@@ -373,13 +377,154 @@ mod tests {
         assert_outputs(&actor, false, false);
 
         fill(&mut actor, &mut state, test_support::hot_dry(), 20);
-        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
         assert_ne!(state.app_mode(), AppMode::VpdRegulation);
         assert_ne!(state.app_mode(), AppMode::TempEnforcing);
-        assert_eq!(state.mode_since_s(), 10);
+        assert_eq!(state.mode_since_s(), 20);
         assert_outputs(&actor, false, false);
-        assert_eq!(state.status_line(), "repos 590s");
+        assert_eq!(state.status_line(), "reste 590s");
         assert_eq!(state.compressor_last_stop_s(), Some(10));
+    }
+
+    #[test]
+    fn compressor_wait_preempts_for_humidity_returns_when_recovered_and_cools_when_rest_clears() {
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(&mut actor, &mut state, test_support::cooled(), 10);
+        fill(&mut actor, &mut state, test_support::hot_dry(), 20);
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+
+        let still_waiting = 10 + COMPRESSOR_REST_S - 1;
+        drive_ok(
+            &mut actor,
+            &mut state,
+            test_support::hot_dry(),
+            still_waiting,
+        );
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+        assert_eq!(state.status_line(), "reste 1s");
+        assert_outputs(&actor, false, false);
+
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(&mut actor, &mut state, test_support::cooled(), 10);
+        fill(&mut actor, &mut state, test_support::hot_dry(), 20);
+        let cleared = 10 + COMPRESSOR_REST_S;
+        drive_ok(
+            &mut actor,
+            &mut state,
+            test_support::hot_humid(),
+            cleared - 2,
+        );
+        drive_ok(
+            &mut actor,
+            &mut state,
+            test_support::hot_humid(),
+            cleared - 1,
+        );
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+        drive_ok(&mut actor, &mut state, test_support::hot_humid(), cleared);
+        assert_eq!(state.app_mode(), AppMode::HrEnforcing);
+        assert_ne!(state.app_mode(), AppMode::TempEnforcing);
+        assert_outputs(&actor, false, true);
+        assert_eq!(state.compressor_last_stop_s(), Some(10));
+
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(&mut actor, &mut state, test_support::cooled(), 10);
+        fill(&mut actor, &mut state, test_support::hot_dry(), 20);
+        fill(&mut actor, &mut state, test_support::cool_dry(), 30);
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_eq!(state.status_line(), "");
+        assert_outputs(&actor, false, false);
+
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(&mut actor, &mut state, test_support::cooled(), 10);
+        fill(&mut actor, &mut state, test_support::hot_dry(), 20);
+        fill(&mut actor, &mut state, test_support::low_vpd(), 40);
+        assert_eq!(state.app_mode(), AppMode::VpdRegulation);
+        assert_outputs(&actor, false, true);
+        assert_eq!(state.compressor_last_stop_s(), Some(10));
+
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(&mut actor, &mut state, test_support::cooled(), 10);
+        fill(&mut actor, &mut state, test_support::hot_dry(), 20);
+        drive_ok(&mut actor, &mut state, test_support::cool_dry(), 25);
+        drive_ok(&mut actor, &mut state, test_support::cool_dry(), 25);
+        drive_ok(&mut actor, &mut state, test_support::hot_dry(), 25);
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+        assert_eq!(state.status_line(), "reste 585s");
+
+        let hot = test_support::hot_dry();
+        fill(
+            &mut actor,
+            &mut state,
+            ProbeMeasure { temp: 19.0, ..hot },
+            26,
+        );
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+        fill(
+            &mut actor,
+            &mut state,
+            ProbeMeasure {
+                temp: 21.0,
+                hygr: 50,
+                vpd: 0.8,
+                time: 0,
+            },
+            27,
+        );
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+
+        drive_ok(&mut actor, &mut state, test_support::hot_dry(), cleared);
+        assert_eq!(state.app_mode(), AppMode::TempEnforcing);
+        assert_eq!(state.mode_since_s(), cleared);
+        assert_outputs(&actor, true, false);
+
+        drive_ok(
+            &mut actor,
+            &mut state,
+            test_support::hot_dry(),
+            cleared + TEMP_ENFORCING_LIMIT_S - 1,
+        );
+        assert_eq!(state.app_mode(), AppMode::TempEnforcing);
+        drive_ok(
+            &mut actor,
+            &mut state,
+            test_support::hot_dry(),
+            cleared + TEMP_ENFORCING_LIMIT_S,
+        );
+        assert_eq!(state.app_mode(), AppMode::FailureStop);
+        assert_eq!(state.mode_since_s(), cleared + TEMP_ENFORCING_LIMIT_S);
+    }
+
+    #[test]
+    fn a_dead_compressor_wait_returns_through_nominal_and_does_not_resume_the_wait() {
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(&mut actor, &mut state, test_support::cooled(), 10);
+        fill(&mut actor, &mut state, test_support::hot_dry(), 20);
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+
+        fill_err(&mut actor, &mut state, 30);
+        assert_eq!(state.app_mode(), AppMode::WaitProbe);
+        assert_eq!(state.status_line(), "! ! !");
+        assert_outputs(&actor, false, false);
+        assert_eq!(state.compressor_last_stop_s(), Some(10));
+
+        fill(&mut actor, &mut state, test_support::in_band(), 40);
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_ne!(state.app_mode(), AppMode::CompressorWait);
+        assert_eq!(state.status_line(), "");
+        assert!(state.rest_active(40));
     }
 
     #[test]
@@ -415,7 +560,7 @@ mod tests {
 
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_outputs(&actor, false, false);
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
     }
 
     #[test]
@@ -467,10 +612,11 @@ mod tests {
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_outputs(&actor, false, false);
         assert_eq!(state.compressor_last_stop_s(), Some(15));
-        assert_eq!(state.status_line(), "repos 600s");
+        assert_eq!(state.status_line(), "");
 
         fill(&mut actor, &mut state, test_support::in_band(), 400);
         assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_eq!(state.status_line(), "");
         assert_eq!(state.compressor_last_stop_s(), Some(15));
         assert!(state.rest_active(15 + COMPRESSOR_REST_S - 1));
         assert!(!state.rest_active(15 + COMPRESSOR_REST_S));
@@ -673,16 +819,18 @@ mod tests {
         assert_eq!(state.mode_since_s(), 30);
         assert_outputs(&actor, false, false);
         assert_eq!(state.compressor_last_stop_s(), Some(30));
-        assert_eq!(state.status_line(), "0s");
+        assert_eq!(state.status_line(), "! ! !");
 
         drive(&mut actor, &mut state, Err(ProbeError), 42);
         assert_eq!(state.app_mode(), AppMode::WaitProbe);
-        assert_eq!(state.status_line(), "12s");
+        assert_eq!(state.status_line(), "! ! !");
+        assert!(state.rest_active(42));
         assert_eq!(state.compressor_last_stop_s(), Some(30));
 
         fill(&mut actor, &mut state, test_support::in_band(), 50);
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_outputs(&actor, false, false);
+        assert_eq!(state.status_line(), "");
         assert_eq!(state.compressor_last_stop_s(), Some(30));
 
         let mut idle = new_actor();

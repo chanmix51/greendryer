@@ -5,7 +5,7 @@
 
 use crate::{AppMode, AppState};
 
-use super::{AppModError, ApplicationMode, held_for_probe_gaps, publish_elapsed};
+use super::{AppModError, ApplicationMode, publish_glyphs};
 
 /// Initial policy, and the policy entered when the sample rack is dead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,19 +14,15 @@ pub struct WaitProbeMode;
 impl<const N: usize, const L: usize> ApplicationMode<N, L> for WaitProbeMode {
     fn init(state: &mut AppState<N, L>, now_s: u32) -> Result<Self, AppModError> {
         super::command_relays(state, false, false, now_s)?;
+        publish_glyphs(state)?;
         Ok(Self)
     }
 
     fn exec(&self, state: &mut AppState<N, L>, now_s: u32) -> Result<(), AppModError> {
-        if held_for_probe_gaps(state)? {
-            return Ok(());
+        if !state.sample_rack().is_healthy() {
+            return publish_glyphs(state);
         }
-        if state.sample_rack().is_dead() {
-            return publish_elapsed(state, now_s);
-        }
-        if state.sample_rack().is_healthy() {
-            state.switch_mode(AppMode::Nominal, now_s);
-        }
+        state.switch_mode(AppMode::Nominal, now_s);
         Ok(())
     }
 }
@@ -51,6 +47,8 @@ mod tests {
         assert!(!state.relay_bank().sw2());
         test_support::assert_spares_off(&state);
         assert_eq!(state.app_mode(), AppMode::WaitProbe);
+        assert_eq!(state.status_line(), "? ? ?");
+        assert_eq!(AppMode::WaitProbe.title(), "ATT. SONDE");
     }
 
     #[test]
@@ -61,6 +59,7 @@ mod tests {
         assert_eq!(state.compressor_last_stop_s(), Some(25));
         assert!(state.rest_active(25));
         assert!(!state.rest_active(25 + COMPRESSOR_REST_S));
+        assert_eq!(state.status_line(), "? ? ?");
 
         let mut already_off = test_support::fresh();
         WaitProbeMode::init(&mut already_off, 25).unwrap();
@@ -108,25 +107,28 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_rack_shows_the_seconds_since_this_entry() {
+    fn a_dead_rack_shows_the_glyph_line_and_not_compressor_rest() {
         let mut state = test_support::fresh();
+        state.set_relays(true, false, 0).unwrap();
         test_support::kill(&mut state);
         state.switch_mode(AppMode::Nominal, 0);
         state.switch_mode(AppMode::WaitProbe, 40);
 
         let mode = WaitProbeMode::init(&mut state, 40).unwrap();
+        assert_eq!(state.compressor_last_stop_s(), Some(40));
         mode.exec(&mut state, 40).unwrap();
-        assert_eq!(state.status_line(), "0s");
+        assert_eq!(state.status_line(), "! ! !");
         assert_eq!(state.app_mode(), AppMode::WaitProbe);
 
         mode.exec(&mut state, 52).unwrap();
-        assert_eq!(state.status_line(), "12s");
+        assert_eq!(state.status_line(), "! ! !");
+        assert!(state.rest_active(52));
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
     }
 
     #[test]
-    fn a_single_error_slot_is_dead_and_shows_seconds() {
+    fn a_single_error_slot_is_dead_and_shows_the_glyph_line() {
         let mut state = AppState::<1, L>::new();
         state.sample_rack_mut().push(Err(ProbeError));
         assert!(state.sample_rack().is_dead());
@@ -134,7 +136,7 @@ mod tests {
         let mode = WaitProbeMode::init(&mut state, 0).unwrap();
         mode.exec(&mut state, 8).unwrap();
         assert_eq!(state.app_mode(), AppMode::WaitProbe);
-        assert_eq!(state.status_line(), "8s");
+        assert_eq!(state.status_line(), "!");
     }
 
     #[test]

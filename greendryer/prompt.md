@@ -80,11 +80,11 @@ In every mode except `FAILURE_STOP`, inspect the rack before that mode's own rul
 
 With a healthy rack, `NOMINAL` clears the status line. It does not display compressor rest, whether rest is set or clear. Do not leave a previous mode's text in place.
 
-`COMPRESSOR_WAIT` holds a hot, dry cabinet until the compressor may start. Both relays stay off. It has no deadline, so this wait does not count toward the 15 minutes of `TEMP_ENFORCING`. The yellow title is `attente compres.`. On a healthy rack it tests these conditions, in this order:
+`COMPRESSOR_WAIT` holds a hot, dry cabinet until the compressor may start. Both relays stay off. It has no deadline, so this wait does not count toward the 15 minutes of `TEMP_ENFORCING`. The yellow title is `ATT. COMPRESS.`. On a healthy rack it tests these conditions, in this order:
 
 1. Humidity at or above 70% → `HR_ENFORCING`. This pre-empts the wait, including on the sample where rest clears. The fridge is already off, so the handoff does not restart rest and does not turn the compressor on for that sample.
-2. All slots have temperature under 19°C or VPD under 0.8 kPa → `NOMINAL`. Temperature equal to 19°C does not match, and VPD equal to 0.8 kPa does not match. One slot that is still above 19°C and above 0.8 kPa keeps the wait. A rack that has recovered enough for `VPD_REGULATION` returns here first; `NOMINAL` applies its own rules on that same sample.
-3. Rest clear → `TEMP_ENFORCING`. This includes a rack that is no longer unanimously above 19°C and above 0.8 kPa, once rule 2 has failed. The cooling deadline starts at that entry, when the compressor starts.
+2. All N slots have temperature under 19°C, or all N slots have VPD under 0.8 kPa → `NOMINAL`. One slot at or above 19°C rejects the temperature return. One slot at or above 0.8 kPa rejects the VPD return. Temperature equal to 19°C does not count as under 19°C, and VPD equal to 0.8 kPa does not count as under 0.8 kPa. A mix, some slots cool and others less dry, stays: one slot meeting one side is not a decision. A rack that has recovered enough for `VPD_REGULATION` returns here first; `NOMINAL` applies its own rules on that same sample.
+3. Rest clear → `TEMP_ENFORCING`. This is the rack that failed rule 2: it is not unanimously under 19°C and not unanimously under 0.8 kPa. The cooling deadline starts at that entry, when the compressor starts.
 4. Otherwise stay. Status `reste {S}s`, with S the whole seconds of rest still remaining. That is the rest countdown, not the time spent in this mode.
 
 `HR_ENFORCING` is the humidity emergency. Fridge off, dehumidifier on, for the whole mode. Leave for `NOMINAL` when all N samples show humidity at or below 65%. If the mode has lasted 30 minutes since this entry, go to `FAILURE_STOP`. The 30 minutes are counted from this entry, including an entry that came from `TEMP_ENFORCING` or `COMPRESSOR_WAIT`.
@@ -110,7 +110,7 @@ stateDiagram-v2
     NOMINAL --> COMPRESSOR_WAIT: N× T > 19°C and VPD > 0.8 kPa\nrest set
     NOMINAL --> VPD_REGULATION: N× VPD < 0.6 kPa
     COMPRESSOR_WAIT --> HR_ENFORCING: N× HR ≥ 70%
-    COMPRESSOR_WAIT --> NOMINAL: N× (T < 19°C or VPD < 0.8 kPa)
+    COMPRESSOR_WAIT --> NOMINAL: N× T < 19°C, or N× VPD < 0.8 kPa
     COMPRESSOR_WAIT --> TEMP_ENFORCING: rest clear
     HR_ENFORCING --> NOMINAL: N× HR ≤ 65%
     TEMP_ENFORCING --> HR_ENFORCING: N× HR ≥ 70%
@@ -136,7 +136,8 @@ stateDiagram-v2
         Both relays off. No deadline.
         Status "reste Ss".
         HR ≥ 70% leaves first.
-        Then a cool or less-dry rack
+        Every slot under 19°C, or
+        every slot under 0.8 kPa,
         returns to NOMINAL.
         Rest clear leaves for
         TEMP_ENFORCING.
@@ -168,10 +169,10 @@ stateDiagram-v2
 | --- | --- | --- | --- | --- |
 | `WAIT_PROBE` | `ATT. SONDE` | off | off | every slot a valid sample → `NOMINAL`. Status is the glyph line, including a dead rack. Compressor rest is not displayed |
 | `NOMINAL` | `NOMINAL` | off | off | the ordered rules above. Healthy rack: empty status, whether rest is set or clear |
-| `COMPRESSOR_WAIT` | `attente compres.` | off | off | N× HR ≥ 70% → `HR_ENFORCING`, else N× (T < 19°C or VPD < 0.8 kPa) → `NOMINAL`, else rest clear → `TEMP_ENFORCING`. Healthy rack: `reste {S}s`. No time limit |
+| `COMPRESSOR_WAIT` | `ATT. COMPRESS.` | off | off | N× HR ≥ 70% → `HR_ENFORCING`, else N× T < 19°C or N× VPD < 0.8 kPa → `NOMINAL`, else rest clear → `TEMP_ENFORCING`. Healthy rack: `reste {S}s`. No time limit |
 | `HR_ENFORCING` | `FORÇAGE HYGRO.` | off | on | N× HR ≤ 65%, or 30 min → `FAILURE_STOP` |
 | `TEMP_ENFORCING` | `FORÇAGE TEMP.` | on | on after N× HR ≥ 65%, then latched | N× HR ≥ 70% → `HR_ENFORCING`, else N× T ≤ 15°C, or 15 min → `FAILURE_STOP` |
-| `VPD_REGULATION` | `RÉGULATION HYGR.` | off | on | N× VPD ≥ 0.8 kPa. No time limit |
+| `VPD_REGULATION` | `RÉGUL. HYGRO.` | off | on | N× VPD ≥ 0.8 kPa. No time limit |
 | `FAILURE_STOP` | `ÉCHEC / ARRÊT` | off | off | reboot only. Status `{S}s` since this entry |
 
 ## Probe
@@ -202,7 +203,7 @@ SSD1306, 128×64, I2C address `0x3C`, on the same master as the probe. Give the 
 
 The panel's top 16 rows are the yellow band. Draw the mode title there in the 6×10 Latin-1 font, a few pixels from the left and vertically centered in the band. On the right of the same band, draw two triangles, each 10 pixels wide and 10 pixels tall, 4 pixels apart, 4 pixels in from the right edge. The right-hand triangle points down and means the fridge. The left-hand one points up and means the dehumidifier. Fill the triangle when that relay is on. Draw only a 1-pixel outline when it is off. Center both triangles vertically in the yellow band.
 
-`RÉGULATION HYGR.` and `attente compres.` are the longest titles that fit. Each is 16 characters. At 6 pixels per character, starting at x = 4, the 16th character ends as it meets the left triangle. Do not lengthen either. The other titles are `NOMINAL`, `FORÇAGE HYGRO.`, `FORÇAGE TEMP.`, `ATT. SONDE`, and `ÉCHEC / ARRÊT`.
+`ATT. COMPRESS.` and `FORÇAGE HYGRO.` are the longest titles. Each is 14 characters. At 6 pixels per character, starting at x = 4, the 16th character of a title ends as it meets the left triangle. Do not lengthen a title that far. The other titles are `NOMINAL`, `FORÇAGE TEMP.`, `ATT. SONDE`, `RÉGUL. HYGRO.`, and `ÉCHEC / ARRÊT`.
 
 Directly under the yellow band, one 6×10 status line. The current mode always sets it.
 
@@ -228,7 +229,7 @@ These are the step 4 tests. Write them before `MainActor` and the mode structs. 
 - Boot starts in `WAIT_PROBE` with both relays off, compressor rest clear, and the glyph line on the status. The rack must fill before `NOMINAL`. A hot, dry cabinet may enter `TEMP_ENFORCING` as soon as the rack is healthy and rest is clear. 
 - All N valid samples must meet a threshold before it changes mode. N is the `HistBuf` capacity. One slot that misses the threshold leaves the mode unchanged. While any slot is still `None`, stay in `WAIT_PROBE`.
 - `NOMINAL` priority: 70% humidity beats a hot cabinet; a hot, dry rack with rest set enters `COMPRESSOR_WAIT` and does not fall through into `VPD_REGULATION`; VPD under 0.6 kPa with humidity under 70% enters `VPD_REGULATION`; VPD above 0.8 kPa at 19°C or below leaves both relays off. A healthy `NOMINAL` rack shows an empty status line whether rest is set or clear.
-- `COMPRESSOR_WAIT` keeps both relays off and shows `reste {S}s`. Humidity at or above 70% goes to `HR_ENFORCING` before the compressor starts, including on the sample where rest clears. All slots under 19°C or under 0.8 kPa return to `NOMINAL`; one slot still above both does not. Exactly 19°C or exactly 0.8 kPa does not return. Rest clear goes to `TEMP_ENFORCING` and the 15-minute deadline starts then. `COMPRESSOR_WAIT` itself does not time out. A return to `NOMINAL` on a rack under 0.6 kPa continues into `VPD_REGULATION` on that same sample.
+- `COMPRESSOR_WAIT` keeps both relays off and shows `reste {S}s`. Humidity at or above 70% goes to `HR_ENFORCING` before the compressor starts, including on the sample where rest clears. All N slots under 19°C return to `NOMINAL`, and so do all N slots under 0.8 kPa. One slot at or above 19°C blocks the temperature return. One slot at or above 0.8 kPa blocks the VPD return. A mix of those two does not return. Exactly 19°C is not under 19°C, and exactly 0.8 kPa is not under 0.8 kPa. Rest clear goes to `TEMP_ENFORCING` and the 15-minute deadline starts then. `COMPRESSOR_WAIT` itself does not time out. A return to `NOMINAL` on a rack under 0.6 kPa continues into `VPD_REGULATION` on that same sample.
 - `TEMP_ENFORCING` latches the dehumidifier once humidity has reached 65%, returns to `NOMINAL` at 15°C, and at 70% humidity goes to `HR_ENFORCING` instead, starting rest and a new 30-minute deadline.
 - `HR_ENFORCING` returns at 65% humidity and becomes `FAILURE_STOP` at 30 minutes.
 - `TEMP_ENFORCING` becomes `FAILURE_STOP` at 15 minutes. `VPD_REGULATION` does not time out. `FAILURE_STOP` has no outgoing transition.
@@ -277,7 +278,7 @@ A slot is `None` until a sample has been stored there. `Ok(ProbeMeasure)` is a v
 
  * `WaitProbe`: the sample rack is incomplete or dead. The status line is the glyph line, including a dead rack. Compressor rest is not displayed. Behavior name: `WAIT_PROBE`.
  * `Nominal`: both relays are off. Compressor rest may still be running. A healthy rack shows an empty status, whether rest is set or clear. Behavior name: `NOMINAL`.
- * `CompressorWait`: all N samples are above 19°C and above 0.8 kPa, and compressor rest is still running. Both relays off. No deadline. Yellow title `attente compres.`. Behavior name: `COMPRESSOR_WAIT`.
+ * `CompressorWait`: all N samples are above 19°C and above 0.8 kPa, and compressor rest is still running. Both relays off. No deadline. Yellow title `ATT. COMPRESS.`. Behavior name: `COMPRESSOR_WAIT`.
  * `VpdRegulation`: all N samples have VPD under 0.6 kPa. Dehumidifier on, fridge off. No deadline. Behavior name: `VPD_REGULATION`.
  * `TempEnforcing`: rest is clear, temperature is above 19°C, and VPD is above 0.8 kPa. Fridge on. The dehumidifier latches on once all N samples are at or above 65% humidity. Behavior name: `TEMP_ENFORCING`.
  * `HrEnforcing`: all N samples have humidity at or above 70%. Fridge off, dehumidifier on. Behavior name: `HR_ENFORCING`.
@@ -391,7 +392,7 @@ Except `FailureStopMode`, `exec` looks at the rack first. A sick or incomplete r
 **exec**, only when the rack is healthy, in this order:
 
  * if all N samples have humidity at or above 70%, switch to `HrEnforcing`. Do not turn the fridge on
- * else if all slots have temperature under 19°C or VPD under 0.8 kPa, switch to `Nominal`. One slot still above 19°C and above 0.8 kPa does not match. Exactly 19°C or exactly 0.8 kPa does not match
+ * else if all N slots have temperature under 19°C, or all N slots have VPD under 0.8 kPa, switch to `Nominal`. One slot at or above 19°C rejects the temperature return. One slot at or above 0.8 kPa rejects the VPD return. A mix of the two stays. Exactly 19°C is not under 19°C, and exactly 0.8 kPa is not under 0.8 kPa
  * else if rest is clear, switch to `TempEnforcing`. The 15-minute deadline starts at that entry
  * else leave both relays off and set the status to `reste {S}s`, with S the whole seconds of rest still remaining
  * this mode has no deadline

@@ -19,7 +19,10 @@ use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
-use greendryer::{AppState, GpioRelays, MainActor, SAMPLE_SLOTS, STATUS_BYTES, Sht31Probe};
+use greendryer::{
+    AppState, ApplicationMode, GpioRelays, MainActor, SAMPLE_SLOTS, STATUS_BYTES, Sht31Probe,
+    WaitProbeMode,
+};
 use static_cell::StaticCell;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -93,12 +96,12 @@ async fn main(spawner: Spawner) -> ! {
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
     let oled_i2c = I2cDevice::new(i2c_bus);
     let sht_i2c = I2cDevice::new(i2c_bus);
-    let published = PUBLISHED.init(Mutex::new(AppState::new()));
-
-    spawner.spawn(display_task::run(oled_i2c, published).expect("failed to spawn display worker"));
-
     let boot = Instant::now();
     let mut state = AppState::<SAMPLE_SLOTS, STATUS_BYTES>::new();
+    WaitProbeMode::init(&mut state, 0).expect("wait-probe boot");
+    let published = PUBLISHED.init(Mutex::new(state.clone()));
+
+    spawner.spawn(display_task::run(oled_i2c, published).expect("failed to spawn display worker"));
     let mut control = MainActor::new(Sht31Probe::new(sht_i2c, boot), relays);
     loop {
         let now_s = u32::try_from(boot.elapsed().as_secs()).unwrap_or(u32::MAX);

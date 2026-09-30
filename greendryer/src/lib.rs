@@ -24,15 +24,13 @@ mod sht31;
 mod board;
 
 pub use app_mode::AppMode;
-pub use app_state::{
-    AppState, COMPRESSOR_READY, COMPRESSOR_REST_S, CompressorRestError, SAMPLE_SLOTS, STATUS_BYTES,
-};
+pub use app_state::{AppState, COMPRESSOR_REST_S, CompressorRestError, SAMPLE_SLOTS, STATUS_BYTES};
 pub use display_actor::DisplayActor;
 pub use io::{MemoryPanel, Panel, PanelView, PinLevel, RecordingRelay, RelayBank, RelayOutput};
 pub use main_actor::{ClimateProbe, MainActor};
 pub use modes::{
-    AppModError, ApplicationMode, FailureStopMode, HrEnforcingMode, NominalMode, TempEnforcingMode,
-    VpdRegulationMode, WaitProbeMode,
+    AppModError, ApplicationMode, CompressorWaitMode, FailureStopMode, HrEnforcingMode,
+    NominalMode, TempEnforcingMode, VpdRegulationMode, WaitProbeMode,
 };
 pub use sample_rack::{ProbeError, ProbeMeasure, SampleRack, SampleSlot};
 

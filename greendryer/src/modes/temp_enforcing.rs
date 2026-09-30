@@ -187,7 +187,7 @@ mod tests {
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
         assert_eq!(state.compressor_last_stop_s(), Some(45));
-        assert_eq!(state.status_line(), "repos 600s");
+        assert_eq!(state.status_line(), "");
     }
 
     #[test]

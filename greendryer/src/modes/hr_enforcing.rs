@@ -2,8 +2,8 @@
 //!
 //! The fridge stays off and the dehumidifier stays on. The policy returns to
 //! `NOMINAL` when every sample is at or below 65% humidity. Thirty minutes
-//! from this entry, including an entry that came from `TEMP_ENFORCING`, go to
-//! `FAILURE_STOP`.
+//! from this entry, including an entry that came from `TEMP_ENFORCING` or
+//! `COMPRESSOR_WAIT`, go to `FAILURE_STOP`.
 
 use crate::{AppMode, AppState};
 

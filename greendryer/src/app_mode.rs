@@ -10,13 +10,20 @@
 pub enum AppMode {
     /// The sample rack is incomplete or dead.
     ///
+    /// The status line is the glyph line, including a dead rack. Compressor rest is not displayed.
     /// Behavior name: `WAIT_PROBE`.
     #[default]
     WaitProbe,
     /// Both relays are off. Compressor rest may still be running.
     ///
+    /// A healthy rack shows an empty status, whether rest is set or clear.
     /// Behavior name: `NOMINAL`.
     Nominal,
+    /// All N samples are above 19°C and above 0.8 kPa, and compressor rest is still running.
+    ///
+    /// Both relays off. This policy has no deadline.
+    /// Behavior name: `COMPRESSOR_WAIT`.
+    CompressorWait,
     /// All N samples have vapor-pressure deficit under 0.6 kPa.
     ///
     /// Dehumidifier on, fridge off. This policy has no deadline.
@@ -45,6 +52,7 @@ impl AppMode {
         match self {
             Self::WaitProbe => "WAIT_PROBE",
             Self::Nominal => "NOMINAL",
+            Self::CompressorWait => "COMPRESSOR_WAIT",
             Self::VpdRegulation => "VPD_REGULATION",
             Self::TempEnforcing => "TEMP_ENFORCING",
             Self::HrEnforcing => "HR_ENFORCING",
@@ -52,12 +60,13 @@ impl AppMode {
         }
     }
 
-    /// Yellow-band title. The longest title is 16 characters.
+    /// Yellow-band title. The longest titles are 14 characters.
     pub const fn title(self) -> &'static str {
         match self {
-            Self::WaitProbe => "ATTENTE SONDE",
+            Self::WaitProbe => "ATT. SONDE",
             Self::Nominal => "NOMINAL",
-            Self::VpdRegulation => "RÉGULATION HYGR.",
+            Self::CompressorWait => "ATT. COMPRESS.",
+            Self::VpdRegulation => "RÉGUL. HYGRO.",
             Self::TempEnforcing => "FORÇAGE TEMP.",
             Self::HrEnforcing => "FORÇAGE HYGRO.",
             Self::FailureStop => "ÉCHEC / ARRÊT",

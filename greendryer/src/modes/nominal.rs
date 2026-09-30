@@ -1,7 +1,9 @@
 //! `NOMINAL`: both relays off while the cabinet is inside its climate band.
 //!
-//! Compressor rest may still be running. Rest blocks only the start of
-//! `TEMP_ENFORCING`. It does not block `HR_ENFORCING` or `VPD_REGULATION`.
+//! Compressor rest may still be running. A hot, dry rack with rest set leaves
+//! for `COMPRESSOR_WAIT` and does not fall through into `VPD_REGULATION`.
+//! Rest does not block `HR_ENFORCING`. A healthy rack shows an empty status
+//! line, whether rest is set or clear.
 
 use crate::{AppMode, AppState};
 
@@ -42,7 +44,8 @@ impl<const N: usize, const L: usize> ApplicationMode<N, L> for NominalMode {
             }
             // Rest blocks cooling. Do not fall through into `VPD_REGULATION`,
             // and do not start the cooling deadline.
-            return settle_nominal(state, now_s);
+            state.switch_mode(AppMode::CompressorWait, now_s);
+            return Ok(());
         }
 
         if state.sample_rack().meets(|sample| sample.vpd < VPD_LOW_KPA) {
@@ -148,7 +151,7 @@ mod tests {
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
     }
 
     #[test]
@@ -177,17 +180,15 @@ mod tests {
         test_support::start_rest(&mut state, 10);
         test_support::fill(&mut state, test_support::hot_dry());
         let nominal = test_support::enter::<NominalMode>(&mut state, AppMode::Nominal, 10);
-        let entered_at = state.mode_since_s();
 
         nominal.exec(&mut state, 10).unwrap();
 
-        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
         assert_ne!(state.app_mode(), AppMode::TempEnforcing);
         assert_ne!(state.app_mode(), AppMode::VpdRegulation);
-        assert_eq!(state.mode_since_s(), entered_at);
+        assert_eq!(state.mode_since_s(), 10);
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
-        assert_eq!(state.status_line(), "repos 600s");
         assert_eq!(state.compressor_last_stop_s(), Some(10));
     }
 
@@ -229,7 +230,7 @@ mod tests {
 
         nominal.exec(&mut state, 0).unwrap();
         assert_eq!(state.app_mode(), AppMode::Nominal);
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
     }
 
     #[test]
@@ -257,42 +258,36 @@ mod tests {
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
     }
 
     #[test]
-    fn an_in_band_cabinet_shows_compresseur_pret_when_rest_is_clear() {
+    fn a_healthy_rack_shows_an_empty_status_whether_rest_is_set_or_clear() {
         let mut state = test_support::fresh();
         test_support::fill(&mut state, test_support::in_band());
         let nominal = test_support::enter::<NominalMode>(&mut state, AppMode::Nominal, 4);
 
         nominal.exec(&mut state, 4).unwrap();
         assert_eq!(state.app_mode(), AppMode::Nominal);
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
-    }
 
-    #[test]
-    fn rest_status_counts_down_and_a_later_off_command_does_not_extend_it() {
-        let mut state = test_support::fresh();
         test_support::start_rest(&mut state, 100);
-        test_support::fill(&mut state, test_support::in_band());
-        let nominal = test_support::enter::<NominalMode>(&mut state, AppMode::Nominal, 100);
-
         nominal.exec(&mut state, 100).unwrap();
-        assert_eq!(state.status_line(), "repos 600s");
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_eq!(state.status_line(), "");
         assert_eq!(state.compressor_last_stop_s(), Some(100));
 
         nominal
             .exec(&mut state, 100 + COMPRESSOR_REST_S - 1)
             .unwrap();
-        assert_eq!(state.status_line(), "repos 1s");
+        assert_eq!(state.status_line(), "");
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_eq!(state.compressor_last_stop_s(), Some(100));
 
         nominal.exec(&mut state, 100 + COMPRESSOR_REST_S).unwrap();
-        assert_eq!(state.status_line(), "compresseur prêt");
+        assert_eq!(state.status_line(), "");
         assert!(!state.rest_active(100 + COMPRESSOR_REST_S));
         assert_eq!(state.compressor_last_stop_s(), Some(100));
         assert!(state.rest_active(100 + COMPRESSOR_REST_S - 1));

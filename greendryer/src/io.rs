@@ -736,7 +736,7 @@ mod tests {
             title: AppMode::Nominal.title(),
             fridge_on: true,
             dehumidifier_on: false,
-            status_line: "compresseur prêt",
+            status_line: "reste 600s",
             reading: Some(reading),
         };
         let frame = render(&view);
@@ -784,7 +784,8 @@ mod tests {
             status_line: "12s",
             reading: Some(ProbeMeasure::new(2, 19.0, 64)),
         };
-        assert_eq!(view.title.chars().count(), 16);
+        assert_eq!(view.title, "RÉGUL. HYGRO.");
+        assert_eq!(view.title.chars().count(), 13);
 
         let frame = render(&view);
         let status_y = centered_top(10 + 20 + 10);
@@ -806,7 +807,7 @@ mod tests {
             title: AppMode::Nominal.title(),
             fridge_on: true,
             dehumidifier_on: true,
-            status_line: "compresseur prêt",
+            status_line: "reste 600s",
             reading: Some(reading),
         };
         let failed = PanelView {
