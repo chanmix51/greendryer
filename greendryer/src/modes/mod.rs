@@ -9,8 +9,9 @@
 //! policy. The actor sees the new mode, calls that policy's `init`, then
 //! `exec`, and repeats while the mode keeps changing. One sample may cross
 //! several modes. The longest chains are three modes, such as `WAIT_PROBE`
-//! → `NOMINAL` → `COMPRESSOR_WAIT` and `COMPRESSOR_WAIT` → `NOMINAL` →
-//! `VPD_REGULATION`. A dead rack is switched to [`WaitProbeMode`] by the
+//! → `NOMINAL` → `COMPRESSOR_WAIT`, `COMPRESSOR_WAIT` → `NOMINAL` →
+//! `VPD_REGULATION`, and a deadline recovery that continues out of `NOMINAL`.
+//! A dead rack is switched to [`WaitProbeMode`] by the
 //! actor before `exec`, so a fridge that was on starts compressor rest on
 //! that sample. `WAIT_PROBE` shows the glyph line, not that rest.
 //!
@@ -59,10 +60,16 @@ pub const VPD_HIGH_KPA: f32 = 0.8;
 /// Vapor-pressure deficit, in kPa, under which the dehumidifier must run.
 pub const VPD_LOW_KPA: f32 = 0.6;
 
-/// `TEMP_ENFORCING` becomes `FAILURE_STOP` after this many seconds.
-pub const TEMP_ENFORCING_LIMIT_S: u32 = 15 * 60;
+/// Seconds from entry after which `TEMP_ENFORCING` recovers or stops.
+///
+/// A healthy rack under 19°C and under 0.8 kPa returns to `NOMINAL` and logs
+/// a warning. Any other healthy rack becomes `FAILURE_STOP`.
+pub const TEMP_ENFORCING_LIMIT_S: u32 = 20 * 60;
 
-/// `HR_ENFORCING` becomes `FAILURE_STOP` after this many seconds.
+/// Seconds from entry after which `HR_ENFORCING` recovers or stops.
+///
+/// A healthy rack under 70% humidity and above 0.6 kPa returns to `NOMINAL`
+/// and logs a warning. Any other healthy rack becomes `FAILURE_STOP`.
 pub const HR_ENFORCING_LIMIT_S: u32 = 30 * 60;
 
 /// A mode could not update the published cabinet state.
@@ -268,6 +275,58 @@ pub(crate) mod test_support {
         sample
     }
 
+    /// Humidity under 70% and above 65%, VPD inside (0.6, 0.8), temperature under 19°C.
+    ///
+    /// A deadline recovery from either enforcing mode returns to `NOMINAL` and stays there.
+    pub fn deadline_recovered() -> ProbeMeasure {
+        let sample = ProbeMeasure::new(0, 18.0, 66);
+        assert!(sample.hygr > HR_CLEAR_PERCENT);
+        assert!(sample.hygr < HR_EMERGENCY_PERCENT);
+        assert!(sample.vpd > VPD_LOW_KPA);
+        assert!(sample.vpd < VPD_HIGH_KPA);
+        assert!(sample.temp < TEMP_START_C);
+        assert!(sample.temp > 15.0);
+        sample
+    }
+
+    /// Still hot and dry, with humidity under 70% and above 65%.
+    ///
+    /// An `HR_ENFORCING` deadline recovery continues into cooling.
+    pub fn recovered_hot_dry() -> ProbeMeasure {
+        let sample = ProbeMeasure::new(0, 25.0, 66);
+        assert!(sample.hygr > HR_CLEAR_PERCENT);
+        assert!(sample.hygr < HR_EMERGENCY_PERCENT);
+        assert!(sample.temp > TEMP_START_C);
+        assert!(sample.vpd > VPD_HIGH_KPA);
+        sample
+    }
+
+    /// Above 15°C, under 19°C, VPD under 0.6, humidity under 70% and above 65%.
+    ///
+    /// A `TEMP_ENFORCING` deadline recovery continues into `VPD_REGULATION`.
+    pub fn recovered_low_vpd() -> ProbeMeasure {
+        let sample = ProbeMeasure::new(0, 16.2, 68);
+        assert!(sample.temp > 15.0);
+        assert!(sample.temp < TEMP_START_C);
+        assert!(sample.hygr > HR_CLEAR_PERCENT);
+        assert!(sample.hygr < HR_EMERGENCY_PERCENT);
+        assert!(sample.vpd < VPD_LOW_KPA);
+        sample
+    }
+
+    /// Install a logger and drop warnings recorded on this thread.
+    pub fn capture_warnings() {
+        install_warning_log();
+        WARNINGS.with(|warnings| warnings.borrow_mut().clear());
+    }
+
+    /// The warnings recorded on this thread since [`capture_warnings`].
+    pub fn assert_warnings(expected: &[&str]) {
+        let got = WARNINGS.with(|warnings| warnings.borrow().clone());
+        let texts: std::vec::Vec<&str> = got.iter().map(|line| line.as_str()).collect();
+        assert_eq!(texts.as_slice(), expected);
+    }
+
     pub fn fill(state: &mut AppState<N, L>, sample: ProbeMeasure) {
         for _ in 0..N {
             state.sample_rack_mut().push(Ok(sample));
@@ -322,6 +381,38 @@ pub(crate) mod test_support {
     pub fn assert_spares_off(state: &AppState<N, L>) {
         assert!(!state.relay_bank().sw3());
         assert!(!state.relay_bank().sw4());
+    }
+
+    std::thread_local! {
+        static WARNINGS: std::cell::RefCell<std::vec::Vec<heapless::String<64>>> =
+            const { std::cell::RefCell::new(std::vec::Vec::new()) };
+    }
+
+    struct WarningLog;
+
+    impl log::Log for WarningLog {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if record.level() == log::Level::Warn {
+                let mut line = heapless::String::new();
+                let _ = core::fmt::Write::write_fmt(&mut line, *record.args());
+                WARNINGS.with(|warnings| warnings.borrow_mut().push(line));
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn install_warning_log() {
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        static LOGGER: WarningLog = WarningLog;
+        INSTALL.call_once(|| {
+            log::set_logger(&LOGGER).expect("install the test warning log");
+            log::set_max_level(log::LevelFilter::Warn);
+        });
     }
 }
 

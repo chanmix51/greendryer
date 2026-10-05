@@ -1,7 +1,7 @@
 //! `COMPRESSOR_WAIT`: a hot, dry cabinet waits until the compressor may start.
 //!
 //! Both relays stay off. This policy has no deadline, so the wait does not
-//! count toward the 15 minutes of `TEMP_ENFORCING`. Humidity at or above 70%
+//! count toward the 20 minutes of `TEMP_ENFORCING`. Humidity at or above 70%
 //! leaves first. The rack returns to `NOMINAL` when every slot is under
 //! 19°C, or when every slot is under 0.8 kPa. One slot meeting only one
 //! side does not decide. Rest clearing starts `TEMP_ENFORCING`.

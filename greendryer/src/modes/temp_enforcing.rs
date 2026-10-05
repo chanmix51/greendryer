@@ -2,13 +2,17 @@
 //!
 //! The dehumidifier stays off until every sample is at or above 65% humidity,
 //! then stays on until this policy ends. Humidity is tested before the
-//! temperature exit and before the 15-minute deadline.
+//! temperature exit and before the 20-minute deadline. At that deadline the
+//! policy returns to `NOMINAL` and logs a warning when every sample is under
+//! 19°C and under 0.8 kPa. Otherwise it becomes `FAILURE_STOP`. Both of those
+//! exits turn the fridge off.
 
 use crate::{AppMode, AppState};
 
 use super::{
     AppModError, ApplicationMode, HR_CLEAR_PERCENT, HR_EMERGENCY_PERCENT, TEMP_DONE_C,
-    TEMP_ENFORCING_LIMIT_S, block_sample_rules, command_relays, publish_elapsed, stop_fridge,
+    TEMP_ENFORCING_LIMIT_S, TEMP_START_C, VPD_HIGH_KPA, block_sample_rules, command_relays,
+    publish_elapsed, stop_fridge,
 };
 
 /// Fridge on. The dehumidifier latches on once humidity reaches 65%.
@@ -46,8 +50,16 @@ impl<const N: usize, const L: usize> ApplicationMode<N, L> for TempEnforcingMode
         }
 
         if state.mode_elapsed_s(now_s) >= TEMP_ENFORCING_LIMIT_S {
+            let recovered = state
+                .sample_rack()
+                .meets(|sample| sample.temp < TEMP_START_C && sample.vpd < VPD_HIGH_KPA);
             stop_fridge(state, now_s)?;
-            state.switch_mode(AppMode::FailureStop, now_s);
+            if recovered {
+                log::warn!("TEMP_ENFORCING deadline recovery");
+                state.switch_mode(AppMode::Nominal, now_s);
+            } else {
+                state.switch_mode(AppMode::FailureStop, now_s);
+            }
             return Ok(());
         }
 
@@ -69,7 +81,7 @@ mod tests {
     use super::super::test_support;
     use super::super::{
         AppModError, ApplicationMode, FailureStopMode, HrEnforcingMode, NominalMode,
-        TEMP_ENFORCING_LIMIT_S,
+        TEMP_ENFORCING_LIMIT_S, TEMP_START_C, VPD_HIGH_KPA, VpdRegulationMode,
     };
     use super::TempEnforcingMode;
 
@@ -144,10 +156,12 @@ mod tests {
             },
         );
 
+        test_support::capture_warnings();
         mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
         assert_eq!(state.app_mode(), AppMode::HrEnforcing);
         assert_eq!(state.mode_since_s(), TEMP_ENFORCING_LIMIT_S);
         assert!(!state.relay_bank().sw1());
+        test_support::assert_warnings(&[]);
     }
 
     #[test]
@@ -174,7 +188,9 @@ mod tests {
         let (mut state, mode) = cooling_at(30);
         test_support::fill(&mut state, test_support::cooled());
 
+        test_support::capture_warnings();
         mode.exec(&mut state, 45).unwrap();
+        test_support::assert_warnings(&[]);
 
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_eq!(state.mode_since_s(), 45);
@@ -222,14 +238,15 @@ mod tests {
     }
 
     #[test]
-    fn the_15_minute_deadline_goes_to_failure_stop_and_turns_the_fridge_off() {
+    fn the_20_minute_deadline_goes_to_failure_stop_when_the_rack_is_still_hot_and_dry() {
         let (mut state, mode) = cooling_at(100);
         mode.exec(&mut state, 100 + TEMP_ENFORCING_LIMIT_S - 1)
             .unwrap();
         assert_eq!(state.app_mode(), AppMode::TempEnforcing);
         assert!(state.relay_bank().sw1());
-        assert_eq!(state.status_line(), "899s");
+        assert_eq!(state.status_line(), "1199s");
 
+        test_support::capture_warnings();
         mode.exec(&mut state, 100 + TEMP_ENFORCING_LIMIT_S).unwrap();
         assert_eq!(state.app_mode(), AppMode::FailureStop);
         assert_eq!(state.mode_since_s(), 100 + TEMP_ENFORCING_LIMIT_S);
@@ -238,6 +255,7 @@ mod tests {
             state.compressor_last_stop_s(),
             Some(100 + TEMP_ENFORCING_LIMIT_S)
         );
+        test_support::assert_warnings(&[]);
 
         FailureStopMode::init(&mut state, 100 + TEMP_ENFORCING_LIMIT_S).unwrap();
         assert!(!state.relay_bank().sw1());
@@ -253,9 +271,137 @@ mod tests {
         let (mut state, mode) = cooling_at(0);
         test_support::fill(&mut state, test_support::cooled());
 
+        test_support::capture_warnings();
         mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_ne!(state.app_mode(), AppMode::FailureStop);
+        test_support::assert_warnings(&[]);
+    }
+
+    #[test]
+    fn at_20_minutes_every_slot_under_19_and_under_0_8_returns_to_nominal_and_logs_a_warning() {
+        let (mut state, mode) = cooling_at(100);
+        let recovered = test_support::deadline_recovered();
+        test_support::fill(&mut state, recovered);
+        let now = 100 + TEMP_ENFORCING_LIMIT_S;
+
+        mode.exec(&mut state, now - 1).unwrap();
+        assert_eq!(state.app_mode(), AppMode::TempEnforcing);
+        assert!(state.relay_bank().sw1());
+
+        test_support::capture_warnings();
+        mode.exec(&mut state, now).unwrap();
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_eq!(state.mode_since_s(), now);
+        assert!(!state.relay_bank().sw1());
+        assert_eq!(state.compressor_last_stop_s(), Some(now));
+        test_support::assert_warnings(&["TEMP_ENFORCING deadline recovery"]);
+
+        let nominal = NominalMode::init(&mut state, now).unwrap();
+        nominal.exec(&mut state, now).unwrap();
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert!(!state.relay_bank().sw1());
+        assert!(!state.relay_bank().sw2());
+        assert_eq!(state.status_line(), "");
+        assert_eq!(state.compressor_last_stop_s(), Some(now));
+        test_support::assert_warnings(&["TEMP_ENFORCING deadline recovery"]);
+    }
+
+    #[test]
+    fn one_slot_at_or_above_19_degrees_rejects_the_20_minute_recovery() {
+        let (mut state, mode) = cooling_at(0);
+        let recovered = test_support::deadline_recovered();
+        let warm = ProbeMeasure {
+            temp: TEMP_START_C,
+            ..recovered
+        };
+        assert_eq!(warm.temp, TEMP_START_C);
+        assert!(warm.vpd < VPD_HIGH_KPA);
+        test_support::fill_with_one_difference(&mut state, recovered, warm);
+
+        test_support::capture_warnings();
+        mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
+        assert_eq!(state.app_mode(), AppMode::FailureStop);
+        assert!(!state.relay_bank().sw1());
+        assert_eq!(state.compressor_last_stop_s(), Some(TEMP_ENFORCING_LIMIT_S));
+        test_support::assert_warnings(&[]);
+    }
+
+    #[test]
+    fn one_slot_at_or_above_0_8_kpa_rejects_the_20_minute_recovery() {
+        let (mut state, mode) = cooling_at(0);
+        let recovered = test_support::deadline_recovered();
+        let dry = ProbeMeasure {
+            vpd: VPD_HIGH_KPA,
+            ..recovered
+        };
+        assert!(dry.temp < TEMP_START_C);
+        assert_eq!(dry.vpd, VPD_HIGH_KPA);
+        test_support::fill_with_one_difference(&mut state, recovered, dry);
+
+        test_support::capture_warnings();
+        mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
+        assert_eq!(state.app_mode(), AppMode::FailureStop);
+        assert!(!state.relay_bank().sw1());
+        test_support::assert_warnings(&[]);
+    }
+
+    #[test]
+    fn exactly_19_degrees_is_not_under_19_at_the_deadline() {
+        let (mut state, mode) = cooling_at(0);
+        let sample = ProbeMeasure::new(0, TEMP_START_C, 66);
+        assert_eq!(sample.temp, TEMP_START_C);
+        assert!(sample.vpd < VPD_HIGH_KPA);
+        assert!(sample.hygr < 70);
+        assert!(sample.temp > 15.0);
+        test_support::fill(&mut state, sample);
+
+        mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
+        assert_eq!(state.app_mode(), AppMode::FailureStop);
+        assert!(!state.relay_bank().sw1());
+    }
+
+    #[test]
+    fn exactly_0_8_kpa_is_not_under_0_8_at_the_deadline() {
+        let (mut state, mode) = cooling_at(0);
+        let recovered = test_support::deadline_recovered();
+        let sample = ProbeMeasure {
+            vpd: VPD_HIGH_KPA,
+            ..recovered
+        };
+        assert!(sample.temp < TEMP_START_C);
+        assert!(sample.temp > 15.0);
+        test_support::fill(&mut state, sample);
+
+        mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
+        assert_eq!(state.app_mode(), AppMode::FailureStop);
+        assert!(!state.relay_bank().sw1());
+    }
+
+    #[test]
+    fn a_20_minute_recovery_on_a_low_vpd_rack_continues_into_vpd_regulation() {
+        let (mut state, mode) = cooling_at(0);
+        test_support::fill(&mut state, test_support::recovered_low_vpd());
+        let now = TEMP_ENFORCING_LIMIT_S;
+
+        test_support::capture_warnings();
+        mode.exec(&mut state, now).unwrap();
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert!(!state.relay_bank().sw1());
+        assert_eq!(state.compressor_last_stop_s(), Some(now));
+        test_support::assert_warnings(&["TEMP_ENFORCING deadline recovery"]);
+
+        let nominal = NominalMode::init(&mut state, now).unwrap();
+        nominal.exec(&mut state, now).unwrap();
+        assert_eq!(state.app_mode(), AppMode::VpdRegulation);
+
+        let drying = VpdRegulationMode::init(&mut state, now).unwrap();
+        assert!(!state.relay_bank().sw1());
+        assert!(state.relay_bank().sw2());
+        assert_eq!(state.compressor_last_stop_s(), Some(now));
+        drying.exec(&mut state, now).unwrap();
+        assert_eq!(state.app_mode(), AppMode::VpdRegulation);
+        assert_eq!(state.mode_since_s(), now);
     }
 
     #[test]
@@ -358,6 +504,22 @@ mod tests {
         mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
         assert_eq!(state.app_mode(), AppMode::FailureStop);
         assert!(!state.relay_bank().sw1());
+    }
+
+    #[test]
+    fn a_recovered_rack_returns_to_nominal_once_a_sick_rack_is_healthy_again() {
+        let (mut state, mode) = cooling_at(0);
+        state.sample_rack_mut().push(Err(crate::ProbeError));
+        mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
+        assert_eq!(state.app_mode(), AppMode::TempEnforcing);
+
+        test_support::fill(&mut state, test_support::deadline_recovered());
+        test_support::capture_warnings();
+        mode.exec(&mut state, TEMP_ENFORCING_LIMIT_S).unwrap();
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert!(!state.relay_bank().sw1());
+        assert_eq!(state.compressor_last_stop_s(), Some(TEMP_ENFORCING_LIMIT_S));
+        test_support::assert_warnings(&["TEMP_ENFORCING deadline recovery"]);
     }
 
     #[test]

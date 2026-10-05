@@ -74,8 +74,10 @@ where
 /// Frame contents for one published state.
 ///
 /// Temperature, humidity, and vapor-pressure deficit are drawn only from a
-/// healthy rack. A failed, sick, incomplete, or empty rack leaves that area
-/// blank; the status line already carries the failure text.
+/// healthy rack. A failed, sick, incomplete, or empty rack leaves those
+/// readings blank; the status line already carries the failure text.
+/// `WAIT_PROBE` still draws the software version on the bottom line of the
+/// blue area.
 fn panel_view<const N: usize, const L: usize>(
     state: &AppState<N, L>,
     fridge: FridgeTriangle,
@@ -183,8 +185,12 @@ mod tests {
             "the first frame should paint the yellow-band title"
         );
         assert!(
-            !any_on(&actor, 16, 64),
+            !any_on(&actor, 16, 54),
             "an empty rack must not invent a temperature"
+        );
+        assert!(
+            any_on(&actor, 54, 64),
+            "WAIT_PROBE centers the software version on the bottom line"
         );
 
         let published = state.clone();
@@ -210,8 +216,12 @@ mod tests {
         state.sample_rack_mut().push(Ok(sample));
         ready(actor.refresh(&state, 0));
         assert!(
-            !any_on(&actor, 16, 64),
+            !any_on(&actor, 16, 54),
             "an incomplete rack must not invent a temperature"
+        );
+        assert!(
+            any_on(&actor, 54, 64),
+            "WAIT_PROBE keeps the version line while the rack is incomplete"
         );
 
         state.sample_rack_mut().push(Ok(sample));
@@ -226,8 +236,12 @@ mod tests {
         ready(actor.refresh(&state, 0));
         assert_eq!(actor.frames(), 3);
         assert!(
-            !any_on(&actor, 16, 64),
+            !any_on(&actor, 16, 54),
             "a sick rack must not keep showing a temperature"
+        );
+        assert!(
+            any_on(&actor, 54, 64),
+            "WAIT_PROBE keeps the version line while the rack is sick"
         );
     }
 

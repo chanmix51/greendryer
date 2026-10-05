@@ -39,7 +39,8 @@ pub enum AppMode {
     /// Fridge off, dehumidifier on.
     /// Behavior name: `HR_ENFORCING`.
     HrEnforcing,
-    /// `TEMP_ENFORCING` ran for 15 minutes or `HR_ENFORCING` ran for 30 minutes.
+    /// `TEMP_ENFORCING` ran for 20 minutes, or `HR_ENFORCING` ran for 30 minutes,
+    /// and the timeout recovery check failed.
     ///
     /// Both relays off. Only a reboot leaves this policy.
     /// Behavior name: `FAILURE_STOP`.

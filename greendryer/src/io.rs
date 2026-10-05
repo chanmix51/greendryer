@@ -21,7 +21,7 @@ use embedded_graphics::{
 };
 use embedded_layout::align::{Align, horizontal, vertical};
 
-use crate::ProbeMeasure;
+use crate::{AppMode, ProbeMeasure};
 
 const PANEL_WIDTH: i32 = 128;
 const PANEL_HEIGHT: i32 = 64;
@@ -51,6 +51,13 @@ const DEHUM_LEFT: i32 = DEHUM_CX - TRI_W / 2;
 const _: () = assert!(TEXT_X + 16 * GLYPH_6_WIDTH == DEHUM_LEFT);
 const _: () = assert!(BLUE_BLOCK_HEIGHT <= BLUE_HEIGHT);
 const _: () = assert!(TITLE_Y == TRI_TOP);
+
+/// Bottom line of a `WAIT_PROBE` frame: `v. {VERSION}`.
+///
+/// `VERSION` is the semver crate version from `Cargo.toml`.
+const VERSION_LINE: &str = concat!("v. ", env!("CARGO_PKG_VERSION"));
+/// Top of the 6×10 version line. The font ends on the last row of the blue area.
+const VERSION_TOP: i32 = PANEL_HEIGHT - GLYPH_6_HEIGHT;
 
 /// The blue area under the yellow band.
 const BLUE_AREA: Rectangle = Rectangle::new(
@@ -291,7 +298,9 @@ where
 /// The top 16 rows are the yellow band: the mode title on the left, and the
 /// dehumidifier and fridge triangles on the right. The status line, and a
 /// valid reading's temperature, humidity, and vapor-pressure deficit, are
-/// centered together in the blue area below that band.
+/// centered together in the blue area below that band. `WAIT_PROBE` also
+/// centers `v. {VERSION}` on the bottom line of that area, in the 6×10 font.
+/// `VERSION` is the crate version from `Cargo.toml`.
 pub(crate) fn draw_frame<D>(target: &mut D, view: &PanelView<'_>) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = BinaryColor>,
@@ -310,6 +319,9 @@ where
     )?;
     draw_triangle(target, FRIDGE_CX, false, view.fridge)?;
     draw_blue_area(target, view.status_line, view.reading)?;
+    if view.title == AppMode::WaitProbe.title() {
+        draw_centered_line(target, VERSION_LINE, &FONT_6X10, VERSION_TOP)?;
+    }
     Ok(())
 }
 
@@ -864,10 +876,17 @@ mod tests {
             Point::new(centered_x(failed.status_line, 6), status_y),
             &FONT_6X10,
         );
+        let version_y = super::VERSION_TOP;
         assert_blank(&fresh.left, BLUE_TOP, status_y);
         assert_blank(&fresh.right, BLUE_TOP, status_y);
-        assert_blank(&fresh.left, status_end, WINDOW);
-        assert_blank(&fresh.right, status_end, WINDOW);
+        assert_blank(&fresh.left, status_end, version_y);
+        assert_blank(&fresh.right, status_end, version_y);
+        assert_text(
+            &fresh,
+            super::VERSION_LINE,
+            Point::new(centered_x(super::VERSION_LINE, 6), version_y),
+            &FONT_6X10,
+        );
         assert_triangle(&fresh, fridge_center_x(), false, false);
         assert_triangle(&fresh, dehumidifier_center_x(), true, false);
 
@@ -877,18 +896,139 @@ mod tests {
 
         let replaced_left = render_window_twice(&good, &failed, 0);
         let replaced_right = render_window_twice(&good, &failed, WINDOW);
-        assert_blank(&replaced_left, BLUE_TOP, status_y);
-        assert_blank(&replaced_right, BLUE_TOP, status_y);
-        assert_blank(&replaced_left, status_end, WINDOW);
-        assert_blank(&replaced_right, status_end, WINDOW);
+        let replaced = FrameWindows {
+            left: replaced_left,
+            right: replaced_right,
+        };
+        assert_blank(&replaced.left, BLUE_TOP, status_y);
+        assert_blank(&replaced.right, BLUE_TOP, status_y);
+        assert_blank(&replaced.left, status_end, version_y);
+        assert_blank(&replaced.right, status_end, version_y);
         assert_text(
-            &FrameWindows {
-                left: replaced_left,
-                right: replaced_right,
-            },
+            &replaced,
             failed.status_line,
             Point::new(centered_x(failed.status_line, 6), status_y),
             &FONT_6X10,
         );
+        assert_text(
+            &replaced,
+            super::VERSION_LINE,
+            Point::new(centered_x(super::VERSION_LINE, 6), version_y),
+            &FONT_6X10,
+        );
+    }
+
+    /// Semver 2.0.0: `MAJOR.MINOR.PATCH`, optional `-prerelease` and `+build`.
+    fn is_semver(version: &str) -> bool {
+        if version.is_empty() {
+            return false;
+        }
+        let (without_build, build) = version
+            .split_once('+')
+            .map(|(version, build)| (version, Some(build)))
+            .unwrap_or((version, None));
+        let (core, pre) = without_build
+            .split_once('-')
+            .map(|(core, pre)| (core, Some(pre)))
+            .unwrap_or((without_build, None));
+        let mut parts = core.split('.');
+        let (Some(major), Some(minor), Some(patch)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        if parts.next().is_some()
+            || !numeric_id(major)
+            || !numeric_id(minor)
+            || !numeric_id(patch)
+        {
+            return false;
+        }
+        if pre.is_some_and(|pre| !dot_separated(pre, pre_id)) {
+            return false;
+        }
+        build.is_none_or(|build| dot_separated(build, build_id))
+    }
+
+    fn numeric_id(id: &str) -> bool {
+        let mut bytes = id.bytes();
+        match bytes.next() {
+            Some(b'0') => bytes.next().is_none(),
+            Some(b) if b.is_ascii_digit() => bytes.all(|b| b.is_ascii_digit()),
+            _ => false,
+        }
+    }
+
+    fn pre_id(id: &str) -> bool {
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return false;
+        }
+        if id.bytes().all(|b| b.is_ascii_digit()) {
+            numeric_id(id)
+        } else {
+            true
+        }
+    }
+
+    fn build_id(id: &str) -> bool {
+        !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    }
+
+    fn dot_separated(text: &str, id_ok: fn(&str) -> bool) -> bool {
+        !text.is_empty() && text.split('.').all(id_ok)
+    }
+
+    #[test]
+    fn wait_probe_centers_the_package_version_on_the_bottom_line() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(is_semver(version), "{version} should follow semver");
+        assert!(is_semver("1.2.3"));
+        assert!(is_semver("1.2.3-alpha.1"));
+        assert!(is_semver("1.2.3+build.01"));
+        assert!(is_semver("1.0.0-rc.1+exp.sha"));
+        assert!(!is_semver("01.2.3"));
+        assert!(!is_semver("1.2"));
+        assert!(!is_semver("1.2.3-"));
+        assert!(!is_semver("1.2.3-01"));
+
+        let line = super::VERSION_LINE;
+        assert_eq!(line, std::format!("v. {version}"));
+
+        let view = PanelView {
+            title: AppMode::WaitProbe.title(),
+            fridge: FridgeTriangle::Outline,
+            dehumidifier_on: false,
+            status_line: "? ? ?",
+            reading: None,
+        };
+        let frame = render(&view);
+        let version_y = PANEL_HEIGHT - 10;
+        assert_eq!(version_y, BLUE_TOP + BLUE_HEIGHT - 10);
+        assert_text(
+            &frame,
+            line,
+            Point::new(centered_x(line, 6), version_y),
+            &FONT_6X10,
+        );
+
+        let status_y = centered_top(10);
+        let status_end = status_y + 10;
+        assert_text(
+            &frame,
+            view.status_line,
+            Point::new(centered_x(view.status_line, 6), status_y),
+            &FONT_6X10,
+        );
+        assert_blank(&frame.left, status_end, version_y);
+        assert_blank(&frame.right, status_end, version_y);
+
+        let nominal = render(&PanelView {
+            title: AppMode::Nominal.title(),
+            fridge: FridgeTriangle::Outline,
+            dehumidifier_on: false,
+            status_line: "",
+            reading: None,
+        });
+        assert_blank(&nominal.left, version_y, PANEL_HEIGHT);
+        assert_blank(&nominal.right, version_y, PANEL_HEIGHT);
     }
 }

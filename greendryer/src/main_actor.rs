@@ -18,7 +18,8 @@ use crate::{AppMode, AppState, ProbeError, ProbeMeasure, RelayBank, RelayOutput}
 /// How many policies one sample may enter, including the policy already active.
 ///
 /// The longest chains are three modes, such as `WAIT_PROBE` → `NOMINAL` →
-/// `COMPRESSOR_WAIT` and `COMPRESSOR_WAIT` → `NOMINAL` → `VPD_REGULATION`.
+/// `COMPRESSOR_WAIT`, `COMPRESSOR_WAIT` → `NOMINAL` → `VPD_REGULATION`, and a
+/// deadline recovery that continues from `NOMINAL` into the next policy.
 const MAX_POLICY_PASSES: usize = 4;
 
 /// One climate sample from the probe.
@@ -670,9 +671,11 @@ mod tests {
         drive_ok(&mut drying, &mut state, clear, HR_ENFORCING_LIMIT_S - 1);
         assert_eq!(state.app_mode(), AppMode::HrEnforcing);
 
+        test_support::capture_warnings();
         drive_ok(&mut drying, &mut state, clear, HR_ENFORCING_LIMIT_S);
         assert_eq!(state.app_mode(), AppMode::Nominal);
         assert_outputs(&drying, false, false);
+        test_support::assert_warnings(&[]);
 
         let mut drying = new_actor();
         let mut state = test_support::fresh();
@@ -684,6 +687,7 @@ mod tests {
             HR_ENFORCING_LIMIT_S - 1,
         );
         assert_eq!(state.app_mode(), AppMode::HrEnforcing);
+        test_support::capture_warnings();
         drive_ok(
             &mut drying,
             &mut state,
@@ -693,10 +697,84 @@ mod tests {
         assert_eq!(state.app_mode(), AppMode::FailureStop);
         assert_outputs(&drying, false, false);
         assert_eq!(state.status_line(), "0s");
+        test_support::assert_warnings(&[]);
     }
 
     #[test]
-    fn temp_enforcing_stops_at_15_minutes() {
+    fn hr_enforcing_recovers_at_30_minutes_and_can_continue_into_cooling() {
+        let mut drying = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut drying, &mut state, test_support::hot_humid(), 0);
+        fill(
+            &mut drying,
+            &mut state,
+            test_support::deadline_recovered(),
+            HR_ENFORCING_LIMIT_S - 1,
+        );
+        assert_eq!(state.app_mode(), AppMode::HrEnforcing);
+
+        test_support::capture_warnings();
+        drive_ok(
+            &mut drying,
+            &mut state,
+            test_support::deadline_recovered(),
+            HR_ENFORCING_LIMIT_S,
+        );
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_outputs(&drying, false, false);
+        assert_eq!(state.status_line(), "");
+        assert!(state.compressor_last_stop_s().is_none());
+        test_support::assert_warnings(&["HR_ENFORCING deadline recovery"]);
+
+        let mut drying = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut drying, &mut state, test_support::hot_humid(), 0);
+        fill(
+            &mut drying,
+            &mut state,
+            test_support::recovered_hot_dry(),
+            HR_ENFORCING_LIMIT_S - 1,
+        );
+        test_support::capture_warnings();
+        drive_ok(
+            &mut drying,
+            &mut state,
+            test_support::recovered_hot_dry(),
+            HR_ENFORCING_LIMIT_S,
+        );
+        assert_eq!(state.app_mode(), AppMode::TempEnforcing);
+        assert_outputs(&drying, true, true);
+        assert!(state.compressor_last_stop_s().is_none());
+        assert_eq!(state.mode_since_s(), HR_ENFORCING_LIMIT_S);
+        test_support::assert_warnings(&["HR_ENFORCING deadline recovery"]);
+
+        let mut drying = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut drying, &mut state, test_support::hot_humid(), 0);
+        fill(
+            &mut drying,
+            &mut state,
+            test_support::recovered_hot_dry(),
+            HR_ENFORCING_LIMIT_S - 1,
+        );
+        let rested_at = HR_ENFORCING_LIMIT_S - 100;
+        test_support::start_rest(&mut state, rested_at);
+        test_support::capture_warnings();
+        drive_ok(
+            &mut drying,
+            &mut state,
+            test_support::recovered_hot_dry(),
+            HR_ENFORCING_LIMIT_S,
+        );
+        assert_eq!(state.app_mode(), AppMode::CompressorWait);
+        assert_outputs(&drying, false, false);
+        assert_eq!(state.compressor_last_stop_s(), Some(rested_at));
+        assert_eq!(state.status_line(), "reste 500s");
+        test_support::assert_warnings(&["HR_ENFORCING deadline recovery"]);
+    }
+
+    #[test]
+    fn temp_enforcing_stops_at_20_minutes_when_the_rack_is_still_hot_and_dry() {
         let mut actor = new_actor();
         let mut state = test_support::fresh();
         fill(&mut actor, &mut state, test_support::hot_dry(), 0);
@@ -710,6 +788,7 @@ mod tests {
         assert_eq!(state.app_mode(), AppMode::TempEnforcing);
         assert_outputs(&actor, true, false);
 
+        test_support::capture_warnings();
         drive_ok(
             &mut actor,
             &mut state,
@@ -720,6 +799,57 @@ mod tests {
         assert_outputs(&actor, false, false);
         assert_eq!(state.compressor_last_stop_s(), Some(TEMP_ENFORCING_LIMIT_S));
         assert_eq!(state.status_line(), "0s");
+        test_support::assert_warnings(&[]);
+    }
+
+    #[test]
+    fn temp_enforcing_recovers_at_20_minutes_and_can_continue_into_vpd_regulation() {
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(
+            &mut actor,
+            &mut state,
+            test_support::deadline_recovered(),
+            TEMP_ENFORCING_LIMIT_S - 1,
+        );
+        assert_eq!(state.app_mode(), AppMode::TempEnforcing);
+        assert_outputs(&actor, true, true);
+
+        test_support::capture_warnings();
+        drive_ok(
+            &mut actor,
+            &mut state,
+            test_support::deadline_recovered(),
+            TEMP_ENFORCING_LIMIT_S,
+        );
+        assert_eq!(state.app_mode(), AppMode::Nominal);
+        assert_outputs(&actor, false, false);
+        assert_eq!(state.status_line(), "");
+        assert_eq!(state.compressor_last_stop_s(), Some(TEMP_ENFORCING_LIMIT_S));
+        test_support::assert_warnings(&["TEMP_ENFORCING deadline recovery"]);
+
+        let mut actor = new_actor();
+        let mut state = test_support::fresh();
+        fill(&mut actor, &mut state, test_support::hot_dry(), 0);
+        fill(
+            &mut actor,
+            &mut state,
+            test_support::recovered_low_vpd(),
+            TEMP_ENFORCING_LIMIT_S - 1,
+        );
+        test_support::capture_warnings();
+        drive_ok(
+            &mut actor,
+            &mut state,
+            test_support::recovered_low_vpd(),
+            TEMP_ENFORCING_LIMIT_S,
+        );
+        assert_eq!(state.app_mode(), AppMode::VpdRegulation);
+        assert_outputs(&actor, false, true);
+        assert_eq!(state.compressor_last_stop_s(), Some(TEMP_ENFORCING_LIMIT_S));
+        assert_eq!(state.mode_since_s(), TEMP_ENFORCING_LIMIT_S);
+        test_support::assert_warnings(&["TEMP_ENFORCING deadline recovery"]);
     }
 
     #[test]
@@ -869,7 +999,7 @@ mod tests {
         assert_eq!(state.app_mode(), AppMode::FailureStop);
         assert_eq!(state.mode_since_s(), stopped_at);
         assert_outputs(&actor, false, false);
-        assert_eq!(state.status_line(), "3100s");
+        assert_eq!(state.status_line(), "2800s");
         assert_ne!(state.status_line(), "! ! !");
     }
 }

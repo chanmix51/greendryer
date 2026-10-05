@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "greendryer"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "critical-section",
  "embassy-embedded-hal",
