@@ -34,10 +34,10 @@ impl<const N: usize, const L: usize> ApplicationMode<N, L> for NominalMode {
             return Ok(());
         }
 
-        let hot_and_dry = state
+        if state
             .sample_rack()
-            .meets(|sample| sample.temp > TEMP_START_C && sample.vpd > VPD_HIGH_KPA);
-        if hot_and_dry {
+            .meets(|sample| sample.temp > TEMP_START_C && sample.vpd > VPD_HIGH_KPA)
+        {
             if !state.rest_active(now_s) {
                 state.switch_mode(AppMode::TempEnforcing, now_s);
                 return Ok(());
@@ -170,8 +170,6 @@ mod tests {
 
         nominal.exec(&mut state, 0).unwrap();
         assert_eq!(state.app_mode(), AppMode::Nominal);
-        assert_ne!(state.app_mode(), AppMode::TempEnforcing);
-        assert_ne!(state.app_mode(), AppMode::VpdRegulation);
     }
 
     #[test]
@@ -184,8 +182,6 @@ mod tests {
         nominal.exec(&mut state, 10).unwrap();
 
         assert_eq!(state.app_mode(), AppMode::CompressorWait);
-        assert_ne!(state.app_mode(), AppMode::TempEnforcing);
-        assert_ne!(state.app_mode(), AppMode::VpdRegulation);
         assert_eq!(state.mode_since_s(), 10);
         assert!(!state.relay_bank().sw1());
         assert!(!state.relay_bank().sw2());
